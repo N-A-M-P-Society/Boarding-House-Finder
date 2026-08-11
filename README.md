@@ -18,8 +18,8 @@ Boarding-House-Finder is a map-centric boarding house and lodging marketplace de
     Framework: Next.js (App Router, Server Components & Server Actions)
     Styling: Tailwind CSS
     Database & Backend: Supabase
-        Database: PostgreSQL with Row-Level Security (RLS)
-        Realtime: WebSocket subscriptions for instant messaging
-        Storage: Storage Buckets for property images and verification documents
-        Auth: @supabase/ssr Authentication with Role-Based Access (Student vs. Landlord)
+    Database: PostgreSQL with Row-Level Security (RLS)
+    Realtime: WebSocket subscriptions for instant messaging
+    Storage: Storage Buckets for property images and verification documents
+    Auth: @supabase/ssr Authentication with Role-Based Access (Student vs. Landlord)
     Maps & Geolocation: Leaflet.js with OpenStreetMap tiles
