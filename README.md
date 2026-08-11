@@ -11,6 +11,7 @@ Boarding-House-Finder is a map-centric boarding house and lodging marketplace de
     📅 Room Availability Calendar: Live calendar tracking room status (available, reserved, occupied).
     ⚖️ Side-by-Side Room Comparison: Compare rent, safety scores, amenities, and verification parameters across multiple listings in a matrix table.
     ⭐ Verified Student Reviews: Ratings and written feedback submitted by verified student tenants.
+    👤 Account Creation for Students and Landlord to access the website
 
 🛠️ Tech Stack
 
