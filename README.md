@@ -1,6 +1,6 @@
 # 🏡 UniRent | Boarding-House-Finder | Map-Centric University Housing Marketplace
 
-**Boarding-House-Finder** is a map-centric boarding house and lodging marketplace designed specifically for university students. It helps students find safe, verified local housing near campus through walking-distance mapping, safety score breakdowns, lifestyle roommate matching, and real-time landlord communication.
+**UnitRent** is a map-centric boarding house and lodging marketplace designed specifically for university students. It helps students find safe, verified local housing near campus through walking-distance mapping, safety score breakdowns, lifestyle roommate matching, and real-time landlord communication.
 
 ---
 
