@@ -71,9 +71,5 @@ yarn dev
 # or
 pnpm dev
 
-Open the application:
-Navigate to http://localhost:3000 in your browser to view the application.
-pnpm dev
-
 Open the Application:
 Navigate to http://localhost:3000 in your browser to view the application.
