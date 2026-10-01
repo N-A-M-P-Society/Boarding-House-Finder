@@ -52,17 +52,21 @@ npm install
 yarn install
 ## or
 pnpm install
+##
 
 3. **Configure Environment Variables:**
 NEXT_PUBLIC_SUPABASE_URL=https://<your-project-id>.supabase.co
+##
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-supabase-anon-key>
+##
 
-4. **Run the Development Server:**
+5. **Run the Development Server:**
 npm run dev
 ## or
 yarn dev
 ## or
 pnpm dev
+##
 
 5. **Open Application:**
 Navigate to http://localhost:3000 in your browser to view the application.
