@@ -30,44 +30,50 @@
 
 ---
 
+Markdown
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
-Ensure you have the following installed on your machine:
+
+Ensure you have the following installed on your local machine:
 * [Node.js](https://nodejs.org/) (v18.0.0 or higher)
 * [Git](https://git-scm.com/)
 
 ---
 
-### 2. Next.js Installation & Setup
+### 2. Installation & Setup
 
 1. **Clone the repository:**
    ```bash
    git clone [https://github.com/your-username/unirent.git](https://github.com/your-username/unirent.git)
    cd unirent
-
-2. **Install project dependencies:**
+   
+Install project dependencies:
+Bash
 npm install
-## or
+# or
 yarn install
-## or
+# or
 pnpm install
-##
 
-3. **Configure Environment Variables:**
-##
+Configure environment variables:
+Create a .env.local file in the root directory and add your Supabase credentials:
+
+Code snippet
 NEXT_PUBLIC_SUPABASE_URL=https://<your-project-id>.supabase.co
-##
-NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-supabase-anon-key>
-##
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-anon-key>
 
-5. **Run the Development Server:**
+Run the development server:
+Bash
 npm run dev
-## or
+# or
 yarn dev
-## or
+# or
 pnpm dev
-##
 
-5. **Open Application:**
+Open the application:
+Navigate to http://localhost:3000 in your browser to view the application.
+pnpm dev
+
+Open the Application:
 Navigate to http://localhost:3000 in your browser to view the application.
