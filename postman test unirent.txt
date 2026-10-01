@@ -1,0 +1,163 @@
+Phase 2: Complete HTTP Method Test Suite (Postman)
+1. GET AUTH TOKENS
+1.1 Landlord Authentication
+Method: POST
+
+URL: https://<your-project-id>.supabase.co/auth/v1/token?grant_type=password
+
+Headers: apikey: <YOUR_SUPABASE_ANON_KEY>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "email": "landlord.davao@gmail.com",
+  "password": "password123"
+}
+Save output as LANDLORD_TOKEN.
+
+1.2 Student Authentication
+Method: POST
+
+URL: https://<your-project-id>.supabase.co/auth/v1/token?grant_type=password
+
+Headers: apikey: <YOUR_SUPABASE_ANON_KEY>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "email": "blue.knight1@addu.edu.ph",
+  "password": "password123"
+}
+Save output as STUDENT_TOKEN.
+
+2. POST (Create Resources)
+2.1 Create Boarding House (POST)
+Method: POST
+
+URL: http://localhost:3000/api/boarding-houses
+
+Headers: Authorization: Bearer <LANDLORD_TOKEN>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "house_name": "Knight's Haven Dormitory",
+  "address": "E. Jacinto St, Davao City",
+  "description": "Student housing near AdDU campus.",
+  "latitude": 7.0715,
+  "longitude": 125.6131
+}
+Output: Returns house_id: 1.
+
+2.2 Create Room (POST)
+Method: POST
+
+URL: http://localhost:3000/api/rooms
+
+Headers: Authorization: Bearer <LANDLORD_TOKEN>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "house_id": 1,
+  "room_number": "101",
+  "monthly_rate": 3500,
+  "capacity": 2,
+  "amenities": "Aircon, WiFi"
+}
+Output: Returns room_id: 1.
+
+2.3 Submit Booking (POST)
+Method: POST
+
+URL: http://localhost:3000/api/bookings
+
+Headers: Authorization: Bearer <STUDENT_TOKEN>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "room_id": 1,
+  "amount": 3500.00,
+  "payment_method": "GCash",
+  "receipt_url": "https://storage.unirent.ph/receipts/gcash-ref-10029384.png"
+}
+Output: Returns booking_id: 1.
+
+3. GET (Fetch & Verify Data)
+3.1 Fetch All Boarding Houses (GET)
+Method: GET
+
+URL: http://localhost:3000/api/boarding-houses
+
+Headers: Authorization: Bearer <STUDENT_TOKEN>
+
+3.2 Fetch Specific Room (GET)
+Method: GET
+
+URL: http://localhost:3000/api/rooms/1
+
+Headers: Authorization: Bearer <STUDENT_TOKEN>
+
+3.3 Fetch Student Bookings (GET)
+Method: GET
+
+URL: http://localhost:3000/api/bookings
+
+Headers: Authorization: Bearer <STUDENT_TOKEN>
+
+4. PUT (Full Resource Update)
+4.1 Update Complete Room Information (PUT)
+Method: PUT
+
+URL: http://localhost:3000/api/rooms/1
+
+Headers: Authorization: Bearer <LANDLORD_TOKEN>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "house_id": 1,
+  "room_number": "101-A",
+  "monthly_rate": 4000,
+  "capacity": 2,
+  "amenities": "Aircon, WiFi, Private Bathroom"
+}
+5. PATCH (Partial Resource Update / State Transition)
+5.1 Verify Booking Status (PATCH)
+Method: PATCH
+
+URL: http://localhost:3000/api/bookings/1
+
+Headers: Authorization: Bearer <LANDLORD_TOKEN>, Content-Type: application/json
+
+Body:
+
+JSON
+{
+  "verification_status": "Verified"
+}
+6. DELETE (Remove Resource)
+To test DELETE without breaking the active room status check, create a temporary room first or delete the created booking at the end of testing.
+
+6.1 Delete a Room (DELETE)
+Method: DELETE
+
+URL: http://localhost:3000/api/rooms/1
+
+Headers: Authorization: Bearer <LANDLORD_TOKEN>
+
+Phase 3: Final State Check
+Run this query in your Supabase SQL Editor after completing Step 5.1 (PATCH):
+
+SQL
+SELECT room_id, room_number, availability_status 
+FROM public.rooms 
+WHERE room_id = 1;
+Expected Result: availability_status should equal 'Occupied'.
