@@ -45,3 +45,24 @@ Ensure you have the following installed on your machine:
    ```bash
    git clone [https://github.com/your-username/unirent.git](https://github.com/your-username/unirent.git)
    cd unirent
+
+npm install
+# or
+yarn install
+# or
+pnpm install
+
+2. **Configure Environment Variables:**
+NEXT_PUBLIC_SUPABASE_URL=https://<your-project-id>.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-supabase-anon-key>
+
+3. **Run the Development Server:**
+
+npm run dev
+# or
+yarn dev
+# or
+pnpm dev
+
+4. **Open Application:**
+Navigate to http://localhost:3000 in your browser to view the application.
