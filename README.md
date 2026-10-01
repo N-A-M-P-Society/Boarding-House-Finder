@@ -55,6 +55,7 @@ pnpm install
 ##
 
 3. **Configure Environment Variables:**
+##
 NEXT_PUBLIC_SUPABASE_URL=https://<your-project-id>.supabase.co
 ##
 NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-supabase-anon-key>
