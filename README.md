@@ -47,9 +47,9 @@ Ensure you have the following installed on your machine:
    cd unirent
 
 npm install
-# or
+## or
 yarn install
-# or
+## or
 pnpm install
 
 2. **Configure Environment Variables:**
@@ -59,9 +59,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=<your-supabase-anon-key>
 3. **Run the Development Server:**
 
 npm run dev
-# or
+## or
 yarn dev
-# or
+## or
 pnpm dev
 
 4. **Open Application:**
