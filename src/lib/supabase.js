@@ -1,22 +1,6 @@
-// src/lib/supabase.js
-import { createServerClient } from '@supabase/ssr'
+import { createClient } from '@supabase/supabase-js';
 
-export function createRouteClient(req) {
-  const authHeader = req.headers.get('authorization')
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-  return createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      cookies: {
-        getAll() {
-          return []
-        },
-        setAll() {},
-      },
-      global: {
-        headers: authHeader ? { Authorization: authHeader } : {},
-      },
-    }
-  )
-}
+export const supabase = createClient(supabaseUrl, supabaseAnonKey);

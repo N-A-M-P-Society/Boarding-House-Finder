@@ -1,54 +1,29 @@
-import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase.js';
 
-export async function PATCH(req, { params }) {
+export async function GET(request, { params }) {
   const { id } = await params;
-  const authHeader = req.headers.get('Authorization') || req.headers.get('authorization');
-  if (!authHeader) {
-    return NextResponse.json({ error: 'Missing Authorization header' }, { status: 401 });
-  }
+  const { data, error } = await supabase
+    .from('bookings')
+    .select('*, user_renters(*), rooms(*)')
+    .eq('booking_id', id)
+    .single();
 
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  if (error) return NextResponse.json({ error: error.message }, { status: 404 });
+  return NextResponse.json({ data }, { status: 200 });
+}
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    }
-  );
+export async function PATCH(request, { params }) {
+  const { id } = await params;
+  const { verification_status } = await request.json(); // e.g. 'Verified', 'Failed'
 
-  const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-  if (userError || !user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-  }
-
-  const body = await req.json();
-  const { verification_status } = body;
-
-  if (!['Pending', 'Verified', 'Failed'].includes(verification_status)) {
-    return NextResponse.json({ error: 'Invalid verification status' }, { status: 400 });
-  }
-
-  // 1. Update booking status
-  const { data: booking, error: bookingError } = await supabase
+  const { data, error } = await supabase
     .from('bookings')
     .update({ verification_status })
     .eq('booking_id', id)
     .select()
     .single();
 
-  if (bookingError) {
-    return NextResponse.json({ error: bookingError.message }, { status: 400 });
-  }
-
-  // 2. Automatically update room status to 'Occupied' when payment is verified
-  if (verification_status === 'Verified' && booking?.room_id) {
-    await supabase
-      .from('rooms')
-      .update({ availability_status: 'Occupied' })
-      .eq('room_id', booking.room_id);
-  }
-
-  return NextResponse.json(booking, { status: 200 });
+  if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+  return NextResponse.json({ data }, { status: 200 });
 }

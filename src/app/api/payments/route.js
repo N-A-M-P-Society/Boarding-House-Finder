@@ -1,30 +1,19 @@
-import { NextResponse } from 'next/server'
-import { createRouteClient } from '@/lib/supabase'
+import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase.js';
 
-export async function GET(req) {
-  const supabase = createRouteClient(req)
+export async function POST(request) {
+  try {
+    const { booking_id, amount, payment_method, receipt_url } = await request.json();
 
-  const { data, error } = await supabase.from('payments').select('*')
+    const { data, error } = await supabase
+      .from('payments')
+      .insert([{ booking_id, amount, payment_method, receipt_url }])
+      .select()
+      .single();
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 })
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ data }, { status: 201 });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
-
-  return NextResponse.json({ data }, { status: 200 })
-}
-
-export async function POST(req) {
-  const supabase = createRouteClient(req)
-  const body = await req.json()
-
-  const { data, error } = await supabase
-    .from('payments')
-    .insert([body])
-    .select()
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 })
-  }
-
-  return NextResponse.json({ data, message: 'Payment recorded successfully' }, { status: 201 })
 }

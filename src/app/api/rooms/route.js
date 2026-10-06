@@ -1,46 +1,35 @@
-import { createClient } from '@supabase/supabase-js';
 import { NextResponse } from 'next/server';
+import { supabase } from '@/lib/supabase.js';
 
-export async function POST(req) {
-  const authHeader = req.headers.get('Authorization') || req.headers.get('authorization');
-  if (!authHeader) {
-    return NextResponse.json({ error: 'Missing Authorization header' }, { status: 401 });
+export async function GET(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const house_id = searchParams.get('house_id');
+
+    let query = supabase.from('rooms').select('*');
+    if (house_id) query = query.eq('house_id', house_id);
+
+    const { data, error } = await query;
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+
+    return NextResponse.json({ data }, { status: 200 });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
+}
 
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+export async function POST(request) {
+  try {
+    const body = await request.json(); // { house_id, room_number, monthly_rate, capacity, amenities }
+    const { data, error } = await supabase
+      .from('rooms')
+      .insert([body])
+      .select()
+      .single();
 
-  const supabase = createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
-    {
-      global: { headers: { Authorization: `Bearer ${token}` } },
-    }
-  );
-
-  const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-  if (userError || !user) {
-    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    if (error) return NextResponse.json({ error: error.message }, { status: 400 });
+    return NextResponse.json({ data }, { status: 201 });
+  } catch (err) {
+    return NextResponse.json({ error: err.message }, { status: 500 });
   }
-
-  const body = await req.json();
-
-  const { data, error } = await supabase
-    .from('rooms')
-    .insert([
-      {
-        house_id: body.house_id,
-        room_number: body.room_number,
-        monthly_rate: body.monthly_rate,
-        capacity: body.capacity ?? 1,
-        availability_status: body.availability_status || 'Available',
-        amenities: body.amenities || null,
-      },
-    ])
-    .select();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 400 });
-  }
-
-  return NextResponse.json(data, { status: 201 });
 }
