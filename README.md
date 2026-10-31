@@ -33,6 +33,7 @@ Finding off-campus housing is stressful: listings are scattered across social me
 | 🤝 **Roommate matching, requests & vouching** | 🧪 UI prototype (demo data, no table yet) |
 | 📆 **Room availability calendar** | 🧪 UI prototype (demo data) |
 | 📎 **Document & photo uploads** (Supabase Storage) | 🚧 Not wired yet – only file names are stored |
+| 💳 **Automated payment verification** via Supabase Edge Functions & database webhooks | ✅ Live |
 
 ---
 
@@ -45,6 +46,7 @@ Finding off-campus housing is stressful: listings are scattered across social me
   - **Auth:** Supabase Auth (email/password) with roles `Student`, `Landlord`, `Admin`, `SuperAdmin`
   - **Realtime:** WebSocket subscription on the `messages` table
 - **Maps:** [Leaflet](https://leafletjs.com/) with OpenStreetMap tiles (no API key needed)
+- **Edge Functions:** Deno/TypeScript (`notify-payment-verification` triggered by `public.payments` table updates)
 
 ---
 
@@ -139,6 +141,9 @@ Security is enforced in the database through RLS and triggers (`supabase_schema.
 
 ```
 src/
+supabase/
+└── functions/
+    └── notify-payment-verification/   # Supabase Edge Function for payment webhooks
 ├── app/            Next.js layout, global styles, entry page
 ├── App.jsx         App shell: session, navigation, theme
 ├── components/     Nav, PropertyCard, LeafletMap, AddListingModal
