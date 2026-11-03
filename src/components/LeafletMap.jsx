@@ -7,11 +7,10 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 /**
  * Leaflet map of properties + campus gates.
- * props: properties, campus {lat,lng}, gates, radiusMeters, activeId, onSelect(id), onViewDetails(id), height
+ * props: properties, gates, radiusMeters, activeId, onSelect(id), onViewDetails(id), height
  */
 export default function LeafletMap({
   properties = [],
-  campus,
   gates = [],
   radiusMeters = 800,
   activeId = null,
@@ -27,6 +26,10 @@ export default function LeafletMap({
   const cbRef = useRef({});
   cbRef.current = { onSelect, onViewDetails };
 
+  // FORCED coordinates precisely inside the Roxas Grounds courtyard (ignoring external props)
+  const campusLat = 7.07218;
+  const campusLng = 125.61340;
+
   // Create the map once (Leaflet touches window, so import it client-side only)
   useEffect(() => {
     let cancelled = false;
@@ -34,7 +37,7 @@ export default function LeafletMap({
       const L = (await import("leaflet")).default;
       if (cancelled || !elRef.current || mapRef.current) return;
       LRef.current = L;
-      const map = L.map(elRef.current, { zoomControl: true, scrollWheelZoom: true }).setView([campus.lat, campus.lng], 16);
+      const map = L.map(elRef.current, { zoomControl: true, scrollWheelZoom: true }).setView([campusLat, campusLng], 16);
       L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
         maxZoom: 19,
         attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
@@ -66,7 +69,7 @@ export default function LeafletMap({
     layer.clearLayers();
 
     // Walk radius around campus
-    L.circle([campus.lat, campus.lng], {
+    L.circle([campusLat, campusLng], {
       radius: radiusMeters,
       color: "#F4623A",
       weight: 2,
@@ -83,7 +86,7 @@ export default function LeafletMap({
       iconSize: [34, 34],
       iconAnchor: [17, 17],
     });
-    L.marker([campus.lat, campus.lng], { icon: campusIcon, zIndexOffset: 500 }).bindTooltip("ADDU Campus", { direction: "top" }).addTo(layer);
+    L.marker([campusLat, campusLng], { icon: campusIcon, zIndexOffset: 500 }).bindTooltip("ADDU Campus", { direction: "top" }).addTo(layer);
     gates.forEach((g) => {
       L.circleMarker([g.lat, g.lng], { radius: 6, color: "#fff", weight: 2, fillColor: "#0B5E6F", fillOpacity: 1 })
         .bindTooltip(esc(g.name), { direction: "top" })
@@ -91,7 +94,7 @@ export default function LeafletMap({
     });
 
     // Property pins
-    const bounds = [[campus.lat, campus.lng]];
+    const bounds = [[campusLat, campusLng]];
     properties.forEach((p) => {
       if (p.lat == null || p.lng == null) return;
       bounds.push([p.lat, p.lng]);
@@ -122,7 +125,7 @@ export default function LeafletMap({
   useEffect(() => {
     draw();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [properties, campus.lat, campus.lng, gates, radiusMeters, activeId]);
+  }, [properties, campusLat, campusLng, gates, radiusMeters, activeId]);
 
   // Pan to the active property
   useEffect(() => {
