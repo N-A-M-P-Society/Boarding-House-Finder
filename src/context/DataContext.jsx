@@ -1,8 +1,8 @@
 "use client";
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
-import { fetchGates, fetchHouses } from "../lib/api";
-import { isSupabaseConfigured } from "../lib/supabase";
-import { DEFAULT_CAMPUS } from "../lib/geo";
+import { fetchGates, fetchHouses } from "../lib/api.js";
+import { isSupabaseConfigured } from "../lib/supabase.js";
+import { DEFAULT_CAMPUS } from "../lib/geo.js";
 
 const DataContext = createContext(null);
 

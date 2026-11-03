@@ -1,4 +1,4 @@
-import { nearestGateWalk } from "./geo";
+import { nearestGateWalk } from "./geo.js";
 
 const PLACEHOLDER_IMG =
   "data:image/svg+xml;utf8," +

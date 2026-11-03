@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { signUp, loadProfile, updateStudentProfile, updateLandlordProfile } from "../lib/api";
-import Logo from "../components/Logo";
+import { signUp, loadProfile, updateStudentProfile, updateLandlordProfile } from "../lib/api.js";
+import Logo from "../components/Logo.jsx";
 const ROLE_OPTIONS = [
   { role: "student", label: "Student", icon: "🎓", desc: "I'm looking for off-campus housing near ADDU" },
   { role: "landlord", label: "Landlord", icon: "🏠", desc: "I want to list my property for ADDU students" },

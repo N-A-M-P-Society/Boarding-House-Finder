@@ -1,7 +1,7 @@
 import { useState } from "react";
-import PropertyCard from "../components/PropertyCard";
-import LeafletMap from "../components/LeafletMap";
-import { useData } from "../context/DataContext";
+import PropertyCard from "../components/PropertyCard.jsx";
+import LeafletMap from "../components/LeafletMap.jsx";
+import { useData } from "../context/DataContext.jsx";
 function walkingColor(mins) {
   if (mins <= 5) return "text-emerald-600";
   if (mins <= 8) return "text-amber-600";

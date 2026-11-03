@@ -1,9 +1,9 @@
 "use client";
 import { useState } from "react";
-import { createHouse, createRoom } from "../lib/api";
-import { AMENITY_ENUM, AMENITY_LABELS } from "../lib/mappers";
-import LeafletMap from "./LeafletMap";
-import { useData } from "../context/DataContext";
+import { createHouse, createRoom } from "../lib/api.js";
+import { AMENITY_ENUM, AMENITY_LABELS } from "../lib/mappers.js";
+import LeafletMap from "./LeafletMap.jsx";
+import { useData } from "../context/DataContext.jsx";
 
 const input = "w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]";
 

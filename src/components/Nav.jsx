@@ -1,5 +1,5 @@
 import { useState } from "react";
-import Logo from "./Logo";
+import Logo from "./Logo.jsx";
 const NAV_ITEMS = [
   { page: "home", label: "Home", icon: "⌂", roles: ["guest", "student", "landlord", "admin"] },
   { page: "listings", label: "Browse", icon: "🔍", roles: ["guest", "student", "landlord", "admin"] },

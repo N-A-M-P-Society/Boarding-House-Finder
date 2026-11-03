@@ -1,4 +1,4 @@
-import { useData } from "../context/DataContext";
+import { useData } from "../context/DataContext.jsx";
 export default function Comparison({ comparedIds, onNavigate, onSelectProperty, onRemove }) {
   const { properties: PROPERTIES } = useData();
   const properties = comparedIds.map((id) => PROPERTIES.find((p) => p.id === id)).filter(Boolean);

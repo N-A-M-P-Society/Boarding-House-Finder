@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { useData } from "../context/DataContext";
-import LeafletMap from "../components/LeafletMap";
-import { createBooking, saveListing } from "../lib/api";
+import { useData } from "../context/DataContext.jsx";
+import LeafletMap from "../components/LeafletMap.jsx";
+import { createBooking, saveListing } from "../lib/api.js";
 export default function PropertyDetail({ propertyId, onNavigate, onStartChat, userRole, session, onRequireLogin }) {
   const { properties: PROPERTIES, gates, campus, reload } = useData();
   const property = PROPERTIES.find((p) => p.id === propertyId);

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
-import { supabase } from "../lib/supabase";
-import { fetchMessages, sendMessage as sendMessageRow, markRead, fetchAccountNames } from "../lib/api";
+import { supabase } from "../lib/supabase.js";
+import { fetchMessages, sendMessage as sendMessageRow, markRead, fetchAccountNames } from "../lib/api.js";
 const avatarFor = (name) =>
   "data:image/svg+xml;utf8," +
   encodeURIComponent(

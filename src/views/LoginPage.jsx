@@ -1,7 +1,7 @@
 import { useState } from "react";
-import Logo from "../components/Logo";
-import { supabase } from "../lib/supabase";
-import { signIn, signOut, loadProfile } from "../lib/api";
+import Logo from "../components/Logo.jsx.";
+import { supabase } from "../lib/supabase.js";
+import { signIn, signOut, loadProfile } from "../lib/api.js";
 const CONFIG = {
   student: {
     icon: "🎓",

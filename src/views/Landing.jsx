@@ -1,5 +1,5 @@
-import { useData } from "../context/DataContext";
-import PropertyCard from "../components/PropertyCard";
+import { useData } from "../context/DataContext.jsx";
+import PropertyCard from "../components/PropertyCard.jsx";
 export default function Landing({ onNavigate, onSelectProperty }) {
   const { properties: PROPERTIES } = useData();
   const featured = PROPERTIES.filter((p) => p.status === "approved").slice(0, 3);

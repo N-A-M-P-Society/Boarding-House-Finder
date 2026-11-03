@@ -1,20 +1,20 @@
 "use client";
 import { useEffect, useState } from "react";
-import Nav from "./components/Nav";
-import RoleSelect from "./views/RoleSelect";
-import LoginPage from "./views/LoginPage";
-import Signup from "./views/Signup";
-import Landing from "./views/Landing";
-import Listings from "./views/Listings";
-import PropertyDetail from "./views/PropertyDetail";
-import StudentDashboard from "./views/StudentDashboard";
-import LandlordDashboard from "./views/LandlordDashboard";
-import AdminConsole from "./views/AdminConsole";
-import Chat from "./views/Chat";
-import Comparison from "./views/Comparison";
-import { DataProvider } from "./context/DataContext";
-import { supabase, isSupabaseConfigured } from "./lib/supabase";
-import { loadProfile, signOut } from "./lib/api";
+import Nav from "./components/Nav.jsx";
+import RoleSelect from "./views/RoleSelect.jsx";
+import LoginPage from "./views/LoginPage.jsx";
+import Signup from "./views/Signup.jsx";
+import Landing from "./views/Landing.jsx";
+import Listings from "./views/Listings.jsx";
+import PropertyDetail from "./views/PropertyDetail.jsx";
+import StudentDashboard from "./views/StudentDashboard.jsx";
+import LandlordDashboard from "./views/LandlordDashboard.jsx";
+import AdminConsole from "./views/AdminConsole.jsx";
+import Chat from "./views/Chat.jsx";
+import Comparison from "./views/Comparison.jsx";
+import { DataProvider } from "./context/DataContext.jsx";
+import { supabase, isSupabaseConfigured } from "./lib/supabase.js";
+import { loadProfile, signOut } from "./lib/api.js";
 const AUTH_PAGES = ["role-select", "login-student", "login-landlord", "login-admin", "signup"];
 // Owns the Supabase session so DataProvider can refetch (RLS) whenever the user changes.
 export default function App() {

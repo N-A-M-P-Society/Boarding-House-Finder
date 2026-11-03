@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import { useData } from "../context/DataContext";
-import { fetchBookings, setBookingStatus } from "../lib/api";
-import AddListingModal from "../components/AddListingModal";
+import { useData } from "../context/DataContext.jsx";
+import { fetchBookings, setBookingStatus } from "../lib/api.js";
+import AddListingModal from "../components/AddListingModal.jsx";
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const CALENDAR_EVENTS = [
   { room: "Room 101", status: "available", start: 0, length: 6 },

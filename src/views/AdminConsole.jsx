@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect, useCallback } from "react";
-import { useData } from "../context/DataContext";
+import { useData } from "../context/DataContext.jsx";
 import {
   fetchPendingVerifications,
   fetchModerationReviews,
@@ -11,7 +11,7 @@ import {
   setReviewHidden,
   recordInspection,
   updateHouse,
-} from "../lib/api";
+} from "../lib/api.js";
 const SETTING_KEYS = { police: "weight_police", lighting: "weight_lighting", gated: "weight_gated", cctv: "weight_cctv" };
 export default function AdminConsole({ displayName, session }) {
   const { properties: PROPERTIES, reload } = useData();

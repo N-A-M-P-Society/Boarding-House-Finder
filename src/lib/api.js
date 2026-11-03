@@ -1,5 +1,5 @@
-import { supabase } from "./supabase";
-import { HOUSE_SELECT, mapGate, mapHouse } from "./mappers";
+import { supabase } from "./supabase.js";
+import { HOUSE_SELECT, mapGate, mapHouse } from "./mappers.js";
 
 const fail = (error) => {
   if (error) throw new Error(error.message || String(error));

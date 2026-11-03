@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
-import PropertyCard from "../components/PropertyCard";
-import { useData } from "../context/DataContext";
-import { fetchSavedHouseIds, fetchBookings, setBookingStatus, updateStudentProfile } from "../lib/api";
+import PropertyCard from "../components/PropertyCard.jsx";
+import { useData } from "../context/DataContext.jsx";
+import { fetchSavedHouseIds, fetchBookings, setBookingStatus, updateStudentProfile } from "../lib/api.js";
 // Quiz answer -> students.pref_* integer columns (see sql_script.txt)
 const PREF_MAP = {
   sleep: { early: 1, flexible: 2, "night-owl": 3 },
