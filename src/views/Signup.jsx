@@ -17,6 +17,7 @@ export default function Signup({ onBack, onLogin }) {
   const [confirmPassword, setConfirmPassword] = useState("");
   // Step 2 — student extra
   const [studentId, setStudentId] = useState("");
+  const [gender, setGender] = useState("");
   const [academicYear, setAcademicYear] = useState("");
   // Step 2 — landlord extra
   const [govIdFile, setGovIdFile] = useState("");
@@ -46,8 +47,12 @@ export default function Signup({ onBack, onLogin }) {
   const [notice, setNotice] = useState("");
   async function handleStep2(e) {
     e.preventDefault();
-    if (selectedRole === "student" && (!studentId || !academicYear)) {
+    if (selectedRole === "student" && (!studentId || !gender || !academicYear)) {
       setError("Please complete your student profile.");
+      return;
+    }
+    if (selectedRole === "student" && !/^[0-9]{12}$/.test(studentId)) {
+      setError("Student ID Number must contain exactly 12 digits.");
       return;
     }
     if (selectedRole === "landlord" && (!govIdFile || !ownershipFile)) {
@@ -58,7 +63,16 @@ export default function Signup({ onBack, onLogin }) {
     setLoading(true);
     try {
       // The DB trigger creates accounts + students/landlords rows from this metadata
-      const res = await signUp({ email, password, fullName, role: selectedRole });
+      const res = await signUp({
+        email,
+        password,
+        fullName,
+        role: selectedRole,
+        studentIdNumber: studentId,
+        academicYear,
+        gender,
+        phoneNumber: phone,
+      });
       if (!res.session) {
         setNotice("Account created. Check your email to confirm your address, then sign in.");
         return;
@@ -69,6 +83,7 @@ export default function Signup({ onBack, onLogin }) {
           phone_number: phone || null,
           student_id_number: studentId,
           academic_year: academicYear,
+          gender,
         });
       } else if (selectedRole === "landlord" && profile?.landlordId) {
         // Only the file names are stored here; wire these to Supabase Storage to keep the actual files.
@@ -279,15 +294,36 @@ export default function Signup({ onBack, onLogin }) {
 
               <div>
                 <label className="block text-sm font-semibold mb-1.5">
+                  Gender <span className="text-red-500">*</span>
+                </label>
+                <select
+                  value={gender}
+                  onChange={(e) => setGender(e.target.value)}
+                  required
+                  className="w-full px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--card)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)] transition-all"
+                >
+                  <option value="">— Select gender —</option>
+                  <option value="Female">Female</option>
+                  <option value="Male">Male</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-semibold mb-1.5">
                   Student ID Number <span className="text-red-500">*</span>
                 </label>
                 <input
                   type="text"
                   value={studentId}
-                  onChange={(e) => setStudentId(e.target.value)}
-                  placeholder="e.g. 2024-00123"
+                  onChange={(e) => setStudentId(e.target.value.replace(/[^0-9]/g, "").slice(0, 12))}
+                  placeholder="e.g. 220241234567"
+                  inputMode="numeric"
+                  maxLength={12}
+                  pattern="[0-9]{12}"
+                  required
                   className="w-full px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--card)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)] transition-all"
                 />
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">Enter exactly 12 digits, without spaces or dashes.</p>
               </div>
 
               <div>

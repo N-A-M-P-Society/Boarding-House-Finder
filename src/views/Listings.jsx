@@ -7,7 +7,7 @@ function walkingColor(mins) {
   if (mins <= 8) return "text-amber-600";
   return "text-red-600";
 }
-export default function Listings({ onNavigate, onSelectProperty, comparedIds, onCompare }) {
+export default function Listings({ onNavigate, onSelectProperty, comparedIds, onCompare, userRole, session }) {
   const [search, setSearch] = useState("");
   const [maxRent, setMaxRent] = useState(15000);
   const [minSafety, setMinSafety] = useState(0);
@@ -16,8 +16,11 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
   const [sortBy, setSortBy] = useState("distance");
   const [activePin, setActivePin] = useState(null);
   const { properties: PROPERTIES, gates, campus, loading, error } = useData();
-  const allBadges = Array.from(new Set(PROPERTIES.flatMap((p) => p.badges)));
-  const filtered = PROPERTIES.filter((p) => p.status === "approved")
+  const visibleProperties = userRole === "landlord"
+    ? PROPERTIES.filter((p) => p.landlordId === String(session?.landlordId ?? ""))
+    : PROPERTIES;
+  const allBadges = Array.from(new Set(visibleProperties.flatMap((p) => p.badges)));
+  const filtered = visibleProperties.filter((p) => p.status === "approved")
     .filter((p) => p.title.toLowerCase().includes(search.toLowerCase()) || p.address.toLowerCase().includes(search.toLowerCase()))
     .filter((p) => p.monthlyRent <= maxRent)
     .filter((p) => p.safetyScore >= minSafety)
@@ -142,6 +145,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
         </div>
 
         <div className="text-xs text-[var(--muted-foreground)] pt-2 border-t border-[var(--border)]">
+          {userRole === "landlord" ? "Your listings: " : ""}
           {filtered.length} listing{filtered.length !== 1 ? "s" : ""} found
         </div>
       </aside>
@@ -192,8 +196,12 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
           ) : filtered.length === 0 ? (
             <div className="text-center py-12 text-[var(--muted-foreground)]">
               <div className="text-3xl mb-3">🏠</div>
-              <p className="text-sm font-medium">No listings match your filters</p>
-              <p className="text-xs mt-1">Try adjusting your price or distance range</p>
+              <p className="text-sm font-medium">
+                {userRole === "landlord" ? "You have no published listings matching these filters" : "No listings match your filters"}
+              </p>
+              <p className="text-xs mt-1">
+                {userRole === "landlord" ? "Only your own listings are shown here." : "Try adjusting your price or distance range"}
+              </p>
             </div>
           ) : (
             filtered.map((p) => (

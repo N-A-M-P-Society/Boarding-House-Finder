@@ -72,6 +72,8 @@ Open your Supabase project → **SQL Editor** and run these two files **in order
 1. `supabase_schema.sql` – creates all tables, enums, triggers, helper functions and RLS policies.
    > ⚠️ This script **deletes existing data** (including `auth.users`). Use a development project only.
 2. `supabase_additions.sql` – adds the pieces the app needs on top of the schema:
+   - student profile gender and 12-digit ID validation (cleans old IDs and clears duplicates)
+   - restricts landlords to seeing their own listings; students and guests still see published listings
    - `landlord_public` and `message_peers` views (so students can see landlord names without exposing private documents)
    - a read policy so safety breakdowns of published houses are public
    - an optional `image_urls` column for photos

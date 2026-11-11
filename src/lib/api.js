@@ -78,7 +78,7 @@ export async function signIn(email, password) {
   A SQL trigger uses this metadata to create the related
   accounts and students/landlords database records.
 */
-export async function signUp({ email, password, fullName, role }) {
+export async function signUp({ email, password, fullName, role, studentIdNumber, academicYear, gender, phoneNumber }) {
   const { data, error } = await supabase.auth.signUp({
     email: email.trim().toLowerCase(),
     password,
@@ -90,7 +90,15 @@ export async function signUp({ email, password, fullName, role }) {
         role: role === "landlord" ? "Landlord" : "Student",
 
         // Save the user's full name in the metadata.
-        full_name: fullName
+        full_name: fullName,
+        ...(role === "student"
+          ? {
+              student_id_number: studentIdNumber,
+              academic_year: academicYear,
+              gender,
+              phone_number: phoneNumber || null
+            }
+          : {})
       }
     },
   });

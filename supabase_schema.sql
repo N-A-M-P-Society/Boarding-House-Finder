@@ -93,7 +93,8 @@ CREATE TABLE students (
     phone_number TEXT,
     emergency_contact_name TEXT,
     emergency_contact_phone TEXT,
-    student_id_number TEXT,
+    student_id_number TEXT CHECK (student_id_number IS NULL OR student_id_number ~ '^[0-9]{12}$'),
+    gender TEXT CHECK (gender IS NULL OR gender IN ('Female', 'Male')),
     university_name TEXT DEFAULT 'Ateneo de Davao University',
     academic_year TEXT,
     pref_sleep_schedule INT CHECK (pref_sleep_schedule BETWEEN 1 AND 3),
@@ -101,6 +102,9 @@ CREATE TABLE students (
     pref_cleanliness INT CHECK (pref_cleanliness BETWEEN 1 AND 5),
     pref_guest_policy INT CHECK (pref_guest_policy BETWEEN 1 AND 3)
 );
+
+CREATE UNIQUE INDEX students_id_number_key
+    ON students (student_id_number) WHERE student_id_number IS NOT NULL;
 
 CREATE TABLE campus_gates (
     gate_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -376,7 +380,17 @@ BEGIN
     IF v_role = 'Landlord' THEN
         INSERT INTO public.landlords (account_id, full_name) VALUES (new_account_id, v_name);
     ELSE
-        INSERT INTO public.students (account_id, full_name) VALUES (new_account_id, v_name);
+        INSERT INTO public.students (
+            account_id, full_name, phone_number, student_id_number, academic_year, gender
+        )
+        VALUES (
+            new_account_id,
+            v_name,
+            NULLIF(NEW.raw_user_meta_data->>'phone_number', ''),
+            NULLIF(NEW.raw_user_meta_data->>'student_id_number', ''),
+            NULLIF(NEW.raw_user_meta_data->>'academic_year', ''),
+            NULLIF(NEW.raw_user_meta_data->>'gender', '')
+        );
     END IF;
     RETURN NEW;
 END;
@@ -516,7 +530,9 @@ CREATE POLICY landlord_insert_houses ON boarding_houses FOR INSERT WITH CHECK (
 );
 CREATE POLICY landlord_update_houses ON boarding_houses FOR UPDATE
     USING (landlord_id = auth_landlord_id()) WITH CHECK (landlord_id = auth_landlord_id());  -- moderation fields guarded by trigger
-CREATE POLICY public_select_published_houses ON boarding_houses FOR SELECT USING (listing_status = 'Published');
+CREATE POLICY public_select_published_houses ON boarding_houses FOR SELECT USING (
+    listing_status = 'Published' AND COALESCE(auth_user_role()::text, '') <> 'Landlord'
+);
 
 CREATE POLICY landlord_insert_verifications ON property_verifications FOR INSERT WITH CHECK (
     auth_user_role() = 'Landlord' AND landlord_id = auth_landlord_id()

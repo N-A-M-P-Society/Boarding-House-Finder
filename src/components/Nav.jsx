@@ -80,11 +80,11 @@ export default function Nav({
   return (
     <aside
       className={`
-        flex flex-col h-screen sticky top-0 bg-[var(--card)] border-r border-[var(--border)]
-        transition-all duration-300 flex-shrink-0 z-40
+        relative flex flex-col h-screen sticky top-0 bg-[var(--card)] border-r border-[var(--border)]
+        transition-[width] duration-300 ease-in-out flex-shrink-0 z-40
 
         /* Change the sidebar width depending on its collapsed state. */
-        ${collapsed ? "w-16" : "w-64"}
+        ${collapsed ? "w-[4.5rem]" : "w-64"}
       `}
     >
 
@@ -92,7 +92,7 @@ export default function Nav({
       {/* This section displays the UniRent logo and the button
           that allows users to collapse the sidebar. */}
 
-      <div className={`flex items-center border-b border-[var(--border)] h-20 px-3 ${collapsed ? "justify-center" : "justify-between"}`}>
+      <div className={`relative flex items-center border-b border-[var(--border)] h-20 px-3 ${collapsed ? "justify-center" : "justify-between"}`}>
 
         {/* Display the full logo when the sidebar is expanded. */}
         {!collapsed && (
@@ -104,8 +104,8 @@ export default function Nav({
                 The logo variant changes depending on the current theme. */}
             <Logo
               variant={isDark ? "light" : "dark"}
-              height={52}
-              maxWidth={120}
+              height={60}
+              maxWidth={156}
             />
           </button>
         )}
@@ -114,11 +114,11 @@ export default function Nav({
         {collapsed && (
           <button
             onClick={() => onNavigate("home")}
-            className="w-10 h-10 rounded-xl bg-[var(--primary)] flex items-center justify-center hover:opacity-80 transition-opacity overflow-hidden p-1"
+            className="w-11 h-11 rounded-xl bg-[var(--primary)] flex items-center justify-center hover:opacity-80 transition-opacity overflow-hidden p-1"
             title="UniRent"
           >
             {/* The smaller logo also acts as a Home navigation button. */}
-            <Logo variant="light" height={36} />
+            <Logo variant="light" height={40} />
           </button>
         )}
 
@@ -127,24 +127,28 @@ export default function Nav({
           <button
             // Clicking this button changes collapsed to true.
             onClick={() => setCollapsed(true)}
-            className="p-1.5 rounded-lg hover:bg-[var(--muted)] transition-colors text-[var(--muted-foreground)] text-xs flex-shrink-0"
+            type="button"
             title="Collapse sidebar"
+            aria-label="Collapse sidebar"
+            aria-expanded="true"
+            className="flex h-9 w-9 flex-shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--background)] text-base text-[var(--muted-foreground)] shadow-sm transition-colors hover:border-[var(--primary)] hover:bg-[var(--secondary)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
           >
-            ◀
+            ‹
           </button>
         )}
       </div>
 
-      {/* EXPAND TOGGLE */}
-      {/* When the sidebar is collapsed, the full collapse button is hidden.
-          This button allows the user to expand the sidebar again. */}
+      {/* Keep the expand control aligned with the logo in the header. */}
       {collapsed && (
         <button
           onClick={() => setCollapsed(false)}
-          className="mt-2 mx-auto p-1.5 rounded-lg hover:bg-[var(--muted)] transition-colors text-[var(--muted-foreground)] text-xs"
+          type="button"
           title="Expand sidebar"
+          aria-label="Expand sidebar"
+          aria-expanded="false"
+          className="absolute -right-4 top-1/2 z-50 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] text-base text-[var(--muted-foreground)] shadow-md transition-colors hover:border-[var(--primary)] hover:bg-[var(--secondary)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
         >
-          ▶
+          ›
         </button>
       )}
 

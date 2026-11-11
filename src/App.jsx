@@ -147,6 +147,8 @@ function Shell({ session, setSession }) {
             onSelectProperty={setSelectedPropertyId}
             comparedIds={comparedIds}
             onCompare={handleCompare}
+            userRole={userRole}
+            session={session}
           />
         )}
         {page === "detail" && (

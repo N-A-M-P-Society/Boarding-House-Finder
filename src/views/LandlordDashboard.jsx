@@ -3,13 +3,6 @@ import { useData } from "../context/DataContext.jsx";
 import { fetchBookings, setBookingStatus } from "../lib/api.js";
 import AddListingModal from "../components/AddListingModal.jsx";
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-const CALENDAR_EVENTS = [
-  { room: "Room 101", status: "available", start: 0, length: 6 },
-  { room: "Room 101", status: "reserved", start: 6, length: 2 },
-  { room: "Room 204", status: "occupied", start: 5, length: 1 },
-  { room: "Room 204", status: "available", start: 6, length: 6 },
-  { room: "Room 305", status: "occupied", start: 0, length: 8 },
-];
 const LANDLORD_ROOMMATE_REQUESTS = [
   {
     id: "sofia",
@@ -59,47 +52,63 @@ const SHORTLIST_CANDIDATES = [
     mismatch: ["Guests"],
   },
 ];
-function AvailabilityCalendar({ onEvent, onEmptyMonth }) {
+function AvailabilityCalendar({ rooms, bookings, onEvent, onEmptyMonth }) {
   const statusClasses = {
     available: "bg-emerald-100 text-emerald-700",
     reserved: "bg-amber-100 text-amber-700",
     occupied: "bg-red-100 text-red-700",
   };
+  function bookingForMonth(roomId, monthIndex) {
+    const monthStart = new Date(2026, monthIndex, 1);
+    const monthEnd = new Date(2026, monthIndex + 1, 0);
+    return bookings.find((booking) => {
+      if (booking.roomId !== roomId || ["cancelled", "completed"].includes(booking.status.toLowerCase())) return false;
+      const start = new Date(`${booking.startDate}T00:00:00`);
+      const end = new Date(`${booking.endDate}T00:00:00`);
+      return start <= monthEnd && end >= monthStart;
+    });
+  }
   return (
     <div className="overflow-x-auto">
       <div className="min-w-[52rem]">
-        <div className="grid grid-cols-[4rem_repeat(12,minmax(3.25rem,1fr))]">
-          <div />
+        <div className="grid grid-cols-[minmax(7rem,1.2fr)_repeat(12,minmax(2.75rem,1fr))] gap-1">
+          <div className="py-1 text-xs font-medium text-[var(--muted-foreground)]">Room</div>
           {MONTHS.map((month) => (
             <div key={month} className="py-1 text-center text-xs font-medium text-[var(--muted-foreground)]">
               {month}
             </div>
           ))}
         </div>
-        {["Room 101", "Room 204", "Room 305"].map((room) => (
-          <div key={room} className="relative grid h-16 grid-cols-[4rem_repeat(12,minmax(3.25rem,1fr))]">
-            <div className="z-10 flex items-center px-1 text-xs font-medium">{room}</div>
-            {MONTHS.map((month, monthIndex) => (
-              <button
-                key={month}
-                type="button"
-                onClick={() => onEmptyMonth(room, monthIndex)}
-                className="border border-[var(--border)] rounded-lg hover:bg-[var(--muted)] transition-colors"
-                aria-label={`Set ${room} availability for ${month} 2026`}
-              />
-            ))}
-            {CALENDAR_EVENTS.filter((event) => event.room === room).map((event) => (
-              <button
-                key={`${event.room}-${event.status}-${event.start}`}
-                type="button"
-                onClick={() => onEvent(event.room, event.status)}
-                className={`z-20 m-1 flex flex-col items-start justify-center overflow-hidden rounded-md px-1 text-left text-[10px] leading-tight transition-transform hover:-translate-y-0.5 ${statusClasses[event.status]}`}
-                style={{ gridColumn: `${event.start + 2} / span ${event.length}`, gridRow: 1 }}
-              >
-                <span>{event.room}</span>
-                <span className="font-semibold uppercase">{event.status}</span>
-              </button>
-            ))}
+        {rooms.length === 0 ? (
+          <p className="py-8 text-center text-sm text-[var(--muted-foreground)]">
+            Add a room to one of your listings to see it on the calendar.
+          </p>
+        ) : rooms.map((room) => (
+          <div key={room.id} className="grid grid-cols-[minmax(7rem,1.2fr)_repeat(12,minmax(2.75rem,1fr))] items-center gap-1 border-t border-[var(--border)] py-2">
+            <div className="truncate px-1 text-xs font-medium" title={`${room.name} · ${room.propertyTitle}`}>
+              <span className="block truncate">{room.name}</span>
+              <span className="block truncate text-[10px] font-normal text-[var(--muted-foreground)]">{room.propertyTitle}</span>
+            </div>
+            {MONTHS.map((month, monthIndex) => {
+              const booking = bookingForMonth(room.id, monthIndex);
+              const status = booking
+                ? booking.status.toLowerCase() === "confirmed" ? "occupied" : "reserved"
+                : room.status;
+              return (
+                <button
+                  key={month}
+                  type="button"
+                  onClick={() => booking
+                    ? onEvent(room, status, month, booking)
+                    : onEmptyMonth(room, monthIndex)}
+                  className={`h-10 rounded-lg border border-[var(--border)] text-[9px] font-semibold uppercase transition-colors hover:ring-2 hover:ring-[var(--ring)] ${statusClasses[status] || statusClasses.available}`}
+                  aria-label={`${room.name}, ${month} 2026: ${status}`}
+                  title={`${month} 2026 · ${status}${booking ? ` · ${booking.studentName}` : ""}`}
+                >
+                  {status}
+                </button>
+              );
+            })}
           </div>
         ))}
       </div>
@@ -119,20 +128,27 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
     refreshBookings();
   }, [session?.landlordId]);
   const [activeTab, setActiveTab] = useState("overview");
-  const [selectedRoom, setSelectedRoom] = useState("all");
+  const [selectedRoom, setSelectedRoom] = useState("");
   const [roommateView, setRoommateView] = useState("list");
   const [shortlistSelected, setShortlistSelected] = useState(["camille", "bea", "anna"]);
   const [roommateNotice, setRoommateNotice] = useState(null);
   const [calendarScreen, setCalendarScreen] = useState("calendar");
   const [roomDetail, setRoomDetail] = useState(null);
   const [availabilityOpen, setAvailabilityOpen] = useState(false);
-  const [availabilityRoom, setAvailabilityRoom] = useState("Room 204");
+  const [availabilityRoom, setAvailabilityRoom] = useState("");
   const [availabilityStart, setAvailabilityStart] = useState("");
   const [availabilityEnd, setAvailabilityEnd] = useState("");
   const [availabilityStatus, setAvailabilityStatus] = useState("available");
   const [showUpdateSummary, setShowUpdateSummary] = useState(false);
   const [calendarToast, setCalendarToast] = useState(null);
   const myProperties = PROPERTIES.filter((p) => p.landlordId === String(session?.landlordId));
+  const calendarRooms = myProperties.flatMap((property) =>
+    property.rooms.map((room) => ({ ...room, propertyTitle: property.title })),
+  );
+  const selectedCalendarRoom = calendarRooms.find((room) => room.id === selectedRoom);
+  const visibleCalendarRooms = selectedRoom === "all"
+    ? calendarRooms
+    : [selectedCalendarRoom || calendarRooms[0]].filter(Boolean);
   const totalRooms = myProperties.flatMap((p) => p.rooms).length;
   const availableRooms = myProperties.flatMap((p) => p.rooms).filter((r) => r.status === "available").length;
   const incomingRequests = LANDLORD_ROOMMATE_REQUESTS;
@@ -426,24 +442,31 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
                 <h2 className="font-display text-xl font-semibold">Room Availability Calendar</h2>
                 <div className="flex gap-2">
                   <button
-                    onClick={() => setAvailabilityOpen(true)}
+                    onClick={() => {
+                      setAvailabilityRoom(selectedCalendarRoom?.id || calendarRooms[0]?.id || "");
+                      setAvailabilityOpen(true);
+                    }}
+                    disabled={calendarRooms.length === 0}
                     className="px-3 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:opacity-90"
                   >
                     Set availability
                   </button>
                   <select
-                    value={selectedRoom}
+                    value={selectedRoom || calendarRooms[0]?.id || ""}
                     onChange={(e) => setSelectedRoom(e.target.value)}
                     className="text-sm border border-[var(--border)] rounded-lg px-3 py-2 bg-[var(--card)] outline-none"
                   >
+                    <option value={calendarRooms[0]?.id || ""}>
+                      {calendarRooms[0]
+                        ? `${calendarRooms[0].name} · ${calendarRooms[0].propertyTitle}`
+                        : "No rooms"}
+                    </option>
                     <option value="all">All rooms</option>
-                    {myProperties
-                      .flatMap((p) => p.rooms)
-                      .map((r) => (
-                        <option key={r.id} value={r.id}>
-                          {r.name}
-                        </option>
-                      ))}
+                    {calendarRooms.slice(1).map((room) => (
+                      <option key={room.id} value={room.id}>
+                        {room.name} · {room.propertyTitle}
+                      </option>
+                    ))}
                   </select>
                 </div>
               </div>
@@ -471,9 +494,11 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
                   <span className="px-3 py-2 border border-[var(--border)] rounded-lg text-sm font-medium">Year</span>
                 </div>
                 <AvailabilityCalendar
-                  onEvent={(room, status) => setRoomDetail({ room, status })}
+                  rooms={visibleCalendarRooms}
+                  bookings={bookings}
+                  onEvent={(room, status, month, booking) => setRoomDetail({ room, status, month, booking })}
                   onEmptyMonth={(room, month) => {
-                    setAvailabilityRoom(room);
+                    setAvailabilityRoom(room.id);
                     setAvailabilityStart(String(month));
                     setAvailabilityEnd(String(month));
                     setAvailabilityOpen(true);
@@ -787,7 +812,7 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
             <div className="flex items-start justify-between gap-4">
               <div className="flex items-center gap-3">
                 <h3 id="room-detail-title" className="font-display text-xl font-semibold">
-                  {roomDetail.room}
+                  {roomDetail.room.name}
                 </h3>
                 <span
                   className={`rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase ${
@@ -812,11 +837,15 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
             <div className="mt-4 space-y-3">
               <div>
                 <div className="text-xs text-[var(--muted-foreground)]">Property</div>
-                <div className="text-sm font-medium">Campus Housing Residence</div>
+                <div className="text-sm font-medium">{roomDetail.room.propertyTitle}</div>
               </div>
               <div>
                 <div className="text-xs text-[var(--muted-foreground)]">Lease Dates</div>
-                <div className="text-sm font-medium">June 2026</div>
+                <div className="text-sm font-medium">
+                  {roomDetail.booking
+                    ? `${roomDetail.booking.startDate} → ${roomDetail.booking.endDate}`
+                    : `${roomDetail.month} 2026`}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-[var(--muted-foreground)]">Status</div>
@@ -869,8 +898,10 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
                   onChange={(event) => setAvailabilityRoom(event.target.value)}
                   className="w-full h-10 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-medium outline-none focus:ring-2 focus:ring-[var(--ring)]"
                 >
-                  {["Room 101", "Room 204", "Room 305"].map((room) => (
-                    <option key={room}>{room}</option>
+                  {calendarRooms.map((room) => (
+                    <option key={room.id} value={room.id}>
+                      {room.name} · {room.propertyTitle}
+                    </option>
                   ))}
                 </select>
               </div>
@@ -937,9 +968,10 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
               <button
                 onClick={() => {
                   setAvailabilityOpen(false);
-                  setCalendarToast(`${availabilityRoom} availability has been updated.`);
+                  const room = calendarRooms.find((item) => item.id === availabilityRoom);
+                  setCalendarToast(`${room?.name || "Room"} availability has been updated.`);
                 }}
-                disabled={!availabilityStart || !availabilityEnd}
+                disabled={!availabilityStart || !availabilityEnd || calendarRooms.length === 0}
                 className="px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Save

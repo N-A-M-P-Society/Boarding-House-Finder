@@ -15,6 +15,14 @@ const STUDENT_SHORTLIST = [
 ];
 export default function StudentDashboard({ onNavigate, onSelectProperty, comparedIds, onCompare, displayName, session }) {
   const { properties: PROPERTIES } = useData();
+  const studentProfile = session?.student ?? {};
+  const gender = studentProfile.gender;
+  const genderText = gender === "Female" || gender === "Male" ? gender : "";
+  const genderBadgeClass = gender === "Female"
+    ? "bg-pink-100 text-pink-700"
+    : gender === "Male"
+      ? "bg-blue-100 text-blue-700"
+      : "bg-[var(--muted)] text-[var(--muted-foreground)]";
   const [savedIds, setSavedIds] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [myRequests, setMyRequests] = useState([]); // roommate requests: UI-only, no table in the current schema
@@ -122,7 +130,9 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
     setRequestStep("submitted");
   }
   function genderLabel(g) {
-    return g === "female" ? "♀ Female" : "♂ Male";
+    if (g === "Female") return "♀ Female";
+    if (g === "Male") return "♂ Male";
+    return "Gender not set";
   }
   function statusColors(s) {
     if (s === "pending") return "bg-amber-50 text-amber-700 border-amber-200";
@@ -137,9 +147,11 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
         <div>
           <div className="flex items-center gap-2">
             <h1 className="font-display text-2xl font-semibold">Hi, {displayName}!</h1>
-            <span className="px-2 py-0.5 rounded-full text-xs font-semibold bg-pink-100 text-pink-700">♀ Female</span>
+            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${genderBadgeClass}`}>{genderLabel(gender)}</span>
           </div>
-          <p className="text-[var(--muted-foreground)] text-sm">BS Psychology · 3rd Year · 2021-04532</p>
+          <p className="text-[var(--muted-foreground)] text-sm">
+            {studentProfile.academic_year || "Academic year not set"} · {studentProfile.student_id_number || "Student ID not set"}
+          </p>
         </div>
       </div>
 
@@ -311,7 +323,9 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                         <span className="font-medium text-[var(--foreground)]">Your note:</span> {req.note}
                       </div>
                       <div className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
-                        <span className="px-2 py-0.5 bg-pink-100 text-pink-700 rounded-full font-medium">♀ Female-only match</span>
+                        <span className={`px-2 py-0.5 rounded-full font-medium ${genderBadgeClass}`}>
+                          {genderText ? `${genderLabel(gender)}-only match` : "Gender not set"}
+                        </span>
                         <span>·</span>
                         <span>Submitted {req.createdAt}</span>
                       </div>
@@ -483,7 +497,7 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                   <h3 className="font-semibold">Eligibility Check</h3>
                   <p className="text-xs text-[var(--muted-foreground)] mt-2">Room 1 — Bed A</p>
                   <div className="mt-3 space-y-2">
-                    {["Room fits 2 or more people", "A bed is still available", "Same gender as you (Female)"].map((item) => (
+                    {["Room fits 2 or more people", "A bed is still available", `Same gender as you (${genderText || "not set"})`].map((item) => (
                       <div key={item} className="flex items-center gap-2 text-xs">
                         <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">✓</span>
                         {item}
@@ -612,7 +626,9 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                 </div>
                 <div className="flex justify-between">
                   <span className="text-[var(--muted-foreground)]">Match type</span>
-                  <span className="font-medium text-pink-700">♀ Female only</span>
+                  <span className={`font-medium ${gender === "Female" ? "text-pink-700" : gender === "Male" ? "text-blue-700" : "text-[var(--muted-foreground)]"}`}>
+                    {genderText ? `${genderLabel(gender)} only` : "Gender not set"}
+                  </span>
                 </div>
               </div>
               <button
@@ -780,7 +796,7 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                 />
               </div>
               <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 space-y-2">
-                {["Same gender as you (Female)", "Not already assigned to another room"].map((item) => (
+                {[`Same gender as you (${genderText || "not set"})`, "Not already assigned to another room"].map((item) => (
                   <div key={item} className="flex items-center gap-2 text-xs">
                     <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">✓</span>
                     {item}
