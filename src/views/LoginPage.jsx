@@ -135,7 +135,7 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
             {role === "admin" && "Manage the UniRent platform."}
           </h2>
           <p className="text-white/65 text-sm leading-relaxed max-w-xs">
-            {role === "student" && "Browse safety-scored listings, request roommate matches, and chat with landlords — all in one place."}
+            {role === "student" && "Browse listing safety details, contact landlords, and manage your bookings — all in one place."}
             {role === "landlord" && "Upload your listing, earn verification badges, and connect with qualified student tenants."}
             {role === "admin" && "Review listings, moderate reviews, configure safety weights, and maintain an immutable audit log."}
           </p>

@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Nav from "./components/Nav.jsx";
 import RoleSelect from "./views/RoleSelect.jsx";
 import LoginPage from "./views/LoginPage.jsx";
@@ -14,7 +14,7 @@ import Chat from "./views/Chat.jsx";
 import Comparison from "./views/Comparison.jsx";
 import { DataProvider } from "./context/DataContext.jsx";
 import { supabase, isSupabaseConfigured } from "./lib/supabase.js";
-import { loadProfile, signOut } from "./lib/api.js";
+import { fetchMessages, loadProfile, signOut } from "./lib/api.js";
 const AUTH_PAGES = ["role-select", "login-student", "login-landlord", "login-admin", "signup"];
 // Owns the Supabase session so DataProvider can refetch (RLS) whenever the user changes.
 export default function App() {
@@ -47,6 +47,63 @@ export default function App() {
 function Shell({ session, setSession }) {
   const userRole = session?.role ?? null;
   const displayName = session?.name ?? "";
+  const accountId = session?.accountId;
+  const [unreadMessageCount, setUnreadMessageCount] = useState(0);
+  const unreadRefreshSequence = useRef(0);
+  const refreshUnreadMessageCount = useCallback(async () => {
+    const request = ++unreadRefreshSequence.current;
+    if (!accountId) {
+      setUnreadMessageCount(0);
+      return;
+    }
+
+    try {
+      const messages = await fetchMessages(accountId);
+      if (request === unreadRefreshSequence.current) {
+        setUnreadMessageCount(messages.filter((message) =>
+          String(message.receiver_id) === String(accountId) && !message.is_read
+        ).length);
+      }
+    } catch (error) {
+      if (request === unreadRefreshSequence.current) {
+        console.error("Could not refresh unread message count:", error);
+      }
+    }
+  }, [accountId]);
+  useEffect(() => {
+    if (!accountId) {
+      unreadRefreshSequence.current += 1;
+      setUnreadMessageCount(0);
+      return;
+    }
+
+    refreshUnreadMessageCount();
+    const channel = supabase
+      .channel(`unread-messages-${accountId}`)
+      .on("postgres_changes", {
+        event: "INSERT",
+        schema: "public",
+        table: "messages",
+        filter: `receiver_id=eq.${accountId}`,
+      }, refreshUnreadMessageCount)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "messages",
+        filter: `receiver_id=eq.${accountId}`,
+      }, refreshUnreadMessageCount)
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") refreshUnreadMessageCount();
+      });
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [accountId, refreshUnreadMessageCount]);
+  const profilePhotoUrl =
+    session?.student?.profile_photo_url ||
+    session?.landlord?.profile_photo_url ||
+    session?.profile_photo_url ||
+    "";
   const [page, setPage] = useState(session ? (session.role === "student" ? "student-dashboard" : session.role === "landlord" ? "landlord-dashboard" : "admin") : "role-select");
   const [pendingLoginRole, setPendingLoginRole] = useState("student");
   const [selectedPropertyId, setSelectedPropertyId] = useState(null);
@@ -85,6 +142,14 @@ function Shell({ session, setSession }) {
     if (profile.role === "student") navigate("student-dashboard");
     else if (profile.role === "landlord") navigate("landlord-dashboard");
     else navigate("admin");
+  }
+  function handleProfilePhotoChange(url) {
+    setSession((current) => current && ({
+      ...current,
+      profile_photo_url: url,
+      student: current.student ? { ...current.student, profile_photo_url: url } : current.student,
+      landlord: current.landlord ? { ...current.landlord, profile_photo_url: url } : current.landlord,
+    }));
   }
   async function handleLogout() {
     await signOut();
@@ -133,20 +198,22 @@ function Shell({ session, setSession }) {
         onNavigate={(p) => navigate(p)}
         userRole={userRole}
         displayName={displayName}
+        profilePhotoUrl={profilePhotoUrl}
+        unreadMessageCount={unreadMessageCount}
         isDark={isDark}
         onToggleTheme={() => setIsDark((dark) => !dark)}
         onLogin={(role) => handleRoleNav(`login-${role}`, role)}
         onLogout={handleLogout}
       />
 
-      <main id="main-content" className={`flex-1 min-w-0 ${isFullHeight ? "overflow-hidden" : "overflow-y-auto"}`}>
+      <main id="main-content" className={`min-h-0 min-w-0 flex-1 ${isFullHeight ? "overflow-hidden" : "overflow-y-auto"}`}>
         {page === "home" && <Landing onNavigate={(p) => navigate(p)} onSelectProperty={setSelectedPropertyId} />}
         {page === "listings" && (
           <Listings
             onNavigate={(p) => navigate(p)}
             onSelectProperty={setSelectedPropertyId}
             comparedIds={comparedIds}
-            onCompare={handleCompare}
+            onCompare={userRole === "admin" ? undefined : handleCompare}
             userRole={userRole}
             session={session}
           />
@@ -167,18 +234,23 @@ function Shell({ session, setSession }) {
         {page === "student-dashboard" && (
           <StudentDashboard
             onNavigate={(p) => navigate(p)}
+            onStartChat={(target) => {
+              setChatTarget(target || null);
+              navigate("chat");
+            }}
             onSelectProperty={setSelectedPropertyId}
             comparedIds={comparedIds}
             onCompare={handleCompare}
             displayName={displayName}
             session={session}
+            onProfilePhotoChange={handleProfilePhotoChange}
           />
         )}
         {page === "landlord-dashboard" && (
-          <LandlordDashboard onNavigate={(p) => navigate(p)} onStartChat={() => navigate("chat")} displayName={displayName} session={session} />
+          <LandlordDashboard onNavigate={(p) => navigate(p)} displayName={displayName} session={session} onProfilePhotoChange={handleProfilePhotoChange} />
         )}
-        {page === "admin" && <AdminConsole displayName={displayName} session={session} />}
-        {page === "chat" && <Chat userRole={userRole} session={session} chatTarget={chatTarget} />}
+        {page === "admin" && <AdminConsole displayName={displayName} session={session} onProfilePhotoChange={handleProfilePhotoChange} />}
+        {page === "chat" && <Chat userRole={userRole} session={session} chatTarget={chatTarget} onMessagesRead={refreshUnreadMessageCount} />}
         {page === "comparison" && (
           <Comparison
             comparedIds={comparedIds}
@@ -188,8 +260,8 @@ function Shell({ session, setSession }) {
           />
         )}
 
-        {comparedIds.length > 0 && page !== "comparison" && (
-          <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-40">
+        {userRole !== "admin" && comparedIds.length > 0 && page !== "comparison" && (
+          <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
             <div className="bg-[var(--foreground)] text-[var(--background)] rounded-2xl px-5 py-3 flex items-center gap-4 shadow-2xl">
               <span className="text-sm font-medium">
                 {comparedIds.length} listing{comparedIds.length !== 1 ? "s" : ""} selected

@@ -3,12 +3,12 @@
 
 // Import React's useState Hook to manage changing form data,
 // selected amenities, error messages, and submission status.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 // Import API functions from api.js.
 // createHouse() creates a new property in the Supabase database.
 // createRoom() creates a room connected to the newly created property.
-import { createHouse, createRoom } from "../lib/api.js";
+import { createHouse, createRoom, uploadPublicImages } from "../lib/api.js";
 
 // Import amenity constants from mappers.js.
 // AMENITY_ENUM contains the allowed amenity values.
@@ -57,6 +57,10 @@ export default function AddListingModal({ onClose, onCreated }) {
   // Store the amenities selected by the landlord.
   // An empty array means no amenities have been selected yet.
   const [amenities, setAmenities] = useState([]);
+  const [propertyPhotoFiles, setPropertyPhotoFiles] = useState([]);
+  const [roomPhotoFiles, setRoomPhotoFiles] = useState([]);
+  const [propertyPhotoPreviews, setPropertyPhotoPreviews] = useState([]);
+  const [roomPhotoPreviews, setRoomPhotoPreviews] = useState([]);
 
 
   // Store error messages that may occur during validation
@@ -67,6 +71,27 @@ export default function AddListingModal({ onClose, onCreated }) {
   // Track whether the form is currently being submitted.
   // This helps prevent repeated submissions while saving.
   const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const previews = propertyPhotoFiles.map((file) => ({ file, url: URL.createObjectURL(file) }));
+    setPropertyPhotoPreviews(previews);
+    return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
+  }, [propertyPhotoFiles]);
+
+  useEffect(() => {
+    const previews = roomPhotoFiles.map((file) => ({ file, url: URL.createObjectURL(file) }));
+    setRoomPhotoPreviews(previews);
+    return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
+  }, [roomPhotoFiles]);
+
+  function choosePhotos(event, setFiles) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (files.length > 8) return setError("Choose no more than 8 photos per section.");
+    const invalidFile = files.find((file) => !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 8 * 1024 * 1024);
+    if (invalidFile) return setError(`${invalidFile.name} must be a JPG, PNG, or WebP image no larger than 8 MB.`);
+    setError("");
+    setFiles(files);
+  }
 
 
   // Reusable function for updating individual form fields.
@@ -129,6 +154,9 @@ export default function AddListingModal({ onClose, onCreated }) {
     // try handles the database operations.
     // catch handles errors if any operation fails.
     try {
+      const uploadedImages = await uploadPublicImages([...propertyPhotoFiles, ...roomPhotoFiles], "listings");
+      const propertyImages = uploadedImages.slice(0, propertyPhotoFiles.length);
+      const roomImages = uploadedImages.slice(propertyPhotoFiles.length);
 
       // STEP 1: Create the main property record in Supabase.
       // createHouse() receives the landlord's property information.
@@ -138,7 +166,8 @@ export default function AddListingModal({ onClose, onCreated }) {
         address: f.address,                     // Property address.
         description: f.description,             // Property description.
         lat: f.lat ? Number(f.lat) : null,       // Latitude or null if not provided.
-        lng: f.lng ? Number(f.lng) : null,       // Longitude or null if not provided.
+        lng: f.lng ? Number(f.lng) : null,
+        images: propertyImages,       // Longitude or null if not provided.
       });
 
 
@@ -149,7 +178,8 @@ export default function AddListingModal({ onClose, onCreated }) {
         monthlyRate: Number(f.rate),             // Monthly rental rate in pesos.
         securityDeposit: Number(f.deposit) || 0, // Deposit amount, defaulting to zero.
         capacity: Number(f.capacity) || 1,       // Room capacity, defaulting to one.
-        amenities,                              // Array of selected room amenities.
+        amenities,
+        images: roomImages,                              // Array of selected room amenities.
       });
 
 
@@ -245,6 +275,22 @@ export default function AddListingModal({ onClose, onCreated }) {
           onChange={set("description")}
         />
 
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold">Property photos <span className="font-normal text-[var(--muted-foreground)]">(optional · up to 8)</span></label>
+          <input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => choosePhotos(event, setPropertyPhotoFiles)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">JPG, PNG, or WebP · maximum 8 MB each. Photos are uploaded to UniRent storage.</p>
+          {propertyPhotoPreviews.length > 0 && (
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {propertyPhotoPreviews.map(({ file, url }, index) => (
+                <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-lg border border-[var(--border)]">
+                  <img src={url} alt={file.name} className="h-24 w-full object-cover" />
+                  <button type="button" onClick={() => setPropertyPhotoFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} aria-label={`Remove ${file.name}`} className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-[10px] text-white">Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
 
         {/* PROPERTY LOCATION COORDINATES */}
 
@@ -333,6 +379,22 @@ export default function AddListingModal({ onClose, onCreated }) {
             value={f.deposit}
             onChange={set("deposit")}
           />
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-sm font-semibold">Room photos <span className="font-normal text-[var(--muted-foreground)]">(optional · up to 8)</span></label>
+          <input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => choosePhotos(event, setRoomPhotoFiles)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]">Add images of this room. JPG, PNG, or WebP · maximum 8 MB each.</p>
+          {roomPhotoPreviews.length > 0 && (
+            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+              {roomPhotoPreviews.map(({ file, url }, index) => (
+                <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-lg border border-[var(--border)]">
+                  <img src={url} alt={file.name} className="h-24 w-full object-cover" />
+                  <button type="button" onClick={() => setRoomPhotoFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} aria-label={`Remove ${file.name}`} className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-[10px] text-white">Remove</button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
 
 

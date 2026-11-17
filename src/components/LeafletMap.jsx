@@ -302,7 +302,7 @@ export default function LeafletMap({
       m.bindPopup(
         `<div style="font-family:inherit;min-width:160px">
            <div style="font-weight:600;font-size:12px;line-height:1.3;margin-bottom:4px">${esc(p.title)}</div>
-           <div style="font-size:11px;color:#6b7280;margin-bottom:8px">🚶 ${esc(p.walkingMinutes)} min · ⚡ ${esc(p.safetyScore)}</div>
+           <div style="font-size:11px;color:#6b7280;margin-bottom:8px">🚶 ${esc(p.walkingMinutes)} min · Safety ${esc(Number(p.safetyScore).toFixed(1))}/10</div>
            <button data-view="${esc(p.id)}" style="width:100%;background:#0B5E6F;color:#fff;border:0;border-radius:8px;padding:6px;font-size:12px;font-weight:600;cursor:pointer">View Details</button>
          </div>`,
         {

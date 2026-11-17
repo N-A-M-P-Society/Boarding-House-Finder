@@ -1,19 +1,16 @@
 import { useEffect, useState } from "react";
 import PropertyCard from "../components/PropertyCard.jsx";
+import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
+import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
 import { useData } from "../context/DataContext.jsx";
-import { fetchSavedHouseIds, fetchBookings, setBookingStatus, updateStudentProfile } from "../lib/api.js";
+import { fetchSavedHouseIds, fetchBookings, setBookingStatus, updateStudentProfile, sendMessage } from "../lib/api.js";
 // Quiz answer -> students.pref_* integer columns (see sql_script.txt)
 const PREF_MAP = {
   sleep: { early: 1, flexible: 2, "night-owl": 3 },
   study: { quiet: 1, "background-music": 2, group: 3 },
   guests: { "no-guests": 1, occasional: 2, frequent: 3 },
 };
-const STUDENT_SHORTLIST = [
-  { id: "camille", initial: "C", name: "Camille Reyes", program: "BS Nursing · 2nd Year", score: 91, partial: [] },
-  { id: "bea", initial: "B", name: "Bea Villanueva", program: "BS Education · 4th Year", score: 86, partial: ["Study"] },
-  { id: "anna", initial: "A", name: "Anna Lim", program: "BS Biology · 3rd Year", score: 78, partial: ["Clean", "Guests"] },
-];
-export default function StudentDashboard({ onNavigate, onSelectProperty, comparedIds, onCompare, displayName, session }) {
+export default function StudentDashboard({ onNavigate, onStartChat, onSelectProperty, comparedIds, onCompare, displayName, session, onProfilePhotoChange }) {
   const { properties: PROPERTIES } = useData();
   const studentProfile = session?.student ?? {};
   const gender = studentProfile.gender;
@@ -25,13 +22,31 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
       : "bg-[var(--muted)] text-[var(--muted-foreground)]";
   const [savedIds, setSavedIds] = useState([]);
   const [bookings, setBookings] = useState([]);
-  const [myRequests, setMyRequests] = useState([]); // roommate requests: UI-only, no table in the current schema
+  const [bookingSearch, setBookingSearch] = useState("");
+  const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
+  const [savedSearch, setSavedSearch] = useState("");
+  const [savedAvailabilityFilter, setSavedAvailabilityFilter] = useState("all");
+  const [bookingDetail, setBookingDetail] = useState(null);
+  const [dashboardNotice, setDashboardNotice] = useState(null);
+  const [requestBusy, setRequestBusy] = useState(false);
   async function refreshMine() {
     if (!session?.studentId) return;
     try {
       setSavedIds(await fetchSavedHouseIds(session.studentId));
       setBookings(await fetchBookings());
-    } catch {}
+    } catch (error) {
+      setDashboardNotice({ title: "Dashboard data could not be loaded", message: error.message, error: true });
+    }
+  }
+  async function cancelBooking(booking) {
+    try {
+      await setBookingStatus(booking.id, "Cancelled");
+      setBookingDetail(null);
+      setDashboardNotice({ title: "Booking cancelled", message: `${booking.propertyTitle} · ${booking.roomName}`, error: false });
+      await refreshMine();
+    } catch (error) {
+      setDashboardNotice({ title: "Booking cancellation failed", message: error.message, error: true });
+    }
   }
   useEffect(() => {
     refreshMine();
@@ -45,19 +60,35 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
   const [requestStep, setRequestStep] = useState("list");
   const [selectedPropertyId, setSelectedPropertyId] = useState("");
   const [selectedRoomId, setSelectedRoomId] = useState("");
-  const [moveInDate, setMoveInDate] = useState("2026-07-01");
+  const [moveInDate, setMoveInDate] = useState("");
   const [note, setNote] = useState("");
-  const [roommateChoiceMethod, setRoommateChoiceMethod] = useState("landlord");
-  const [shortlistChoice, setShortlistChoice] = useState("camille");
-  const [vouchOpen, setVouchOpen] = useState(false);
-  const [vouchStudent, setVouchStudent] = useState("Daisy Ocampo · 2022-02211");
-  const [vouchReason, setVouchReason] = useState("");
   const savedProperties = PROPERTIES.filter((p) => savedIds.includes(p.id));
+  const filteredBookings = bookings.filter((booking) => {
+    const query = bookingSearch.trim().toLowerCase();
+    const status = String(booking.status || "").toLowerCase();
+    const matchesSearch = !query ||
+      String(booking.propertyTitle || "").toLowerCase().includes(query) ||
+      String(booking.roomName || "").toLowerCase().includes(query) ||
+      String(booking.status || "").toLowerCase().includes(query);
+    return matchesSearch && (bookingStatusFilter === "all" || status === bookingStatusFilter);
+  });
+  const filteredSavedProperties = savedProperties.filter((property) => {
+    const query = savedSearch.trim().toLowerCase();
+    const availableRooms = property.rooms.filter((room) => room.status === "available").length;
+    const matchesSearch = !query ||
+      property.title.toLowerCase().includes(query) ||
+      String(property.address || "").toLowerCase().includes(query);
+    const matchesAvailability = savedAvailabilityFilter === "all" ||
+      (savedAvailabilityFilter === "available" ? availableRooms > 0 : availableRooms === 0);
+    return matchesSearch && matchesAvailability;
+  });
   // Properties with available shared rooms
   const sharedProperties = PROPERTIES.filter(
-    (p) => p.status === "approved" && p.rooms.some((r) => r.status === "available" && r.capacity > 1),
+    (p) => p.status === "approved" && p.landlordAccountId && p.rooms.some((r) => r.status === "available" && r.capacity > 1),
   );
-  const selectedProperty = PROPERTIES.find((p) => p.id === selectedPropertyId);
+  const selectedProperty = sharedProperties.find((p) => p.id === selectedPropertyId);
+  const eligibleRooms = selectedProperty?.rooms.filter((room) => room.capacity > 1 && room.status === "available") || [];
+  const selectedSharedRoom = eligibleRooms.find((room) => room.id === selectedRoomId);
   const quizQuestions = [
     {
       id: "sleep",
@@ -96,54 +127,66 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
       ],
     },
   ];
-  function handleQuizAnswer(id, value) {
+  async function handleQuizAnswer(id, value) {
     const newAnswers = { ...quizAnswers, [id]: value };
     setQuizAnswers(newAnswers);
     if (quizStep < quizQuestions.length - 1) {
       setQuizStep(quizStep + 1);
     } else {
-      setQuizDone(true);
-      if (session?.studentId) {
-        updateStudentProfile(session.studentId, {
+      try {
+        if (!session?.studentId) throw new Error("Student profile is not available.");
+        await updateStudentProfile(session.studentId, {
           pref_sleep_schedule: PREF_MAP.sleep[newAnswers.sleep],
           pref_study_habits: PREF_MAP.study[newAnswers.study],
           pref_cleanliness: Number(newAnswers.cleanliness),
           pref_guest_policy: PREF_MAP.guests[newAnswers.guests],
-        }).catch(() => {});
+        });
+        setQuizDone(true);
+      } catch (error) {
+        setDashboardNotice({ title: "Preferences could not be saved", message: error.message, error: true });
       }
     }
   }
-  function submitRequest() {
-    if (!selectedPropertyId || !selectedRoomId || !moveInDate) return;
-    const prop = PROPERTIES.find((p) => p.id === selectedPropertyId);
-    setMyRequests((prev) => [
-      ...prev,
-      {
-        id: `rr${Date.now()}`,
-        propertyTitle: prop?.title,
-        roomName: prop?.rooms.find((r) => r.id === selectedRoomId)?.name,
-        moveInDate,
-        note,
-        status: "pending",
-      },
-    ]);
-    setRequestStep("submitted");
+  async function submitRequest() {
+    const room = eligibleRooms.find((item) => item.id === selectedRoomId);
+    if (!session?.accountId || !selectedProperty?.landlordAccountId || !room || !moveInDate) return;
+    setRequestBusy(true);
+    setDashboardNotice(null);
+    try {
+      await sendMessage(
+        session.accountId,
+        Number(selectedProperty.landlordAccountId),
+        [
+          `Roommate request: ${selectedProperty.title} · ${room.name}`,
+          `Preferred move-in: ${moveInDate}`,
+          `Same-gender roommate preference: ${genderText || "not set"}`,
+          `Additional note: ${note.trim() || "None"}`,
+        ].join("\n"),
+      );
+      setRequestStep("submitted");
+    } catch (error) {
+      setDashboardNotice({ title: "Request could not be sent", message: error.message, error: true });
+    } finally {
+      setRequestBusy(false);
+    }
   }
   function genderLabel(g) {
     if (g === "Female") return "♀ Female";
     if (g === "Male") return "♂ Male";
     return "Gender not set";
   }
-  function statusColors(s) {
-    if (s === "pending") return "bg-amber-50 text-amber-700 border-amber-200";
-    if (s === "matched") return "bg-emerald-50 text-emerald-700 border-emerald-200";
-    return "bg-red-50 text-red-700 border-red-200";
-  }
   return (
     <div className="student-dashboard max-w-6xl mx-auto px-4 sm:px-6 py-8">
       {/* Header */}
       <div className="flex items-center gap-4 mb-8">
-        <div className="w-14 h-14 rounded-full bg-[var(--primary)] text-white flex items-center justify-center text-xl font-bold">{(displayName || "S").charAt(0).toUpperCase()}</div>
+        <ProfilePhotoUpload
+          name={displayName}
+          photoUrl={studentProfile.profile_photo_url}
+          onUploaded={async (url) => {
+            await updateStudentProfile(session.studentId, { profile_photo_url: url });
+            onProfilePhotoChange?.(url);
+          }}
+        />
         <div>
           <div className="flex items-center gap-2">
             <h1 className="font-display text-2xl font-semibold">Hi, {displayName}!</h1>
@@ -159,8 +202,8 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
       <div className="flex gap-1 border-b border-[var(--border)] mb-8 overflow-x-auto">
         {[
           ["overview", "Overview"],
-          ["roommates", `Roommate Requests${myRequests.length ? ` (${myRequests.length})` : ""}`],
-          ["saved", "Saved (2)"],
+          ["roommates", "Roommate Requests"],
+          ["saved", `Saved (${savedProperties.length})`],
           ["quiz", "Compatibility Quiz"],
         ].map(([tab, label]) => (
           <button
@@ -180,11 +223,10 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
       {/* ── Overview ── */}
       {activeTab === "overview" && (
         <div className="space-y-8">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {[
               { label: "Saved Listings", value: String(savedProperties.length), icon: "🏠", color: "bg-[var(--secondary)] text-[var(--primary)]" },
               { label: "My Bookings", value: String(bookings.length), icon: "💬", color: "bg-amber-50 text-amber-700" },
-              { label: "Roommate Requests", value: String(myRequests.length), icon: "🤝", color: "bg-emerald-50 text-emerald-700" },
               { label: "Listings Compared", value: `${comparedIds.length}/4`, icon: "📊", color: "bg-purple-50 text-purple-700" },
             ].map((stat) => (
               <div key={stat.label} className={`rounded-2xl border border-[var(--border)] p-4 ${stat.color}`}>
@@ -197,30 +239,42 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
 
           {bookings.length > 0 && (
             <div>
-              <h2 className="font-display text-xl font-semibold mb-4">My Bookings</h2>
-              <div className="space-y-2">
-                {bookings.map((b) => (
-                  <div key={b.id} className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 flex items-center justify-between gap-3 text-sm">
-                    <div>
-                      <div className="font-semibold">{b.propertyTitle} · {b.roomName}</div>
-                      <div className="text-xs text-[var(--muted-foreground)]">{b.startDate} → {b.endDate} · ₱{b.monthlyRate.toLocaleString()}/mo</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="px-2.5 py-1 rounded-full text-xs font-semibold bg-[var(--secondary)] text-[var(--primary)]">{b.status}</span>
-                      {(b.status === "Pending" || b.status === "Confirmed") && (
-                        <button
-                          onClick={async () => {
-                            await setBookingStatus(b.id, "Cancelled");
-                            refreshMine();
-                          }}
-                          className="text-xs text-red-600 hover:underline"
-                        >
-                          Cancel
-                        </button>
-                      )}
-                    </div>
-                  </div>
-                ))}
+              <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h2 className="font-display text-xl font-semibold">My Bookings</h2>
+                  <p className="mt-1 text-xs text-[var(--muted-foreground)]">{filteredBookings.length} of {bookings.length} bookings</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input type="search" value={bookingSearch} onChange={(event) => setBookingSearch(event.target.value)} placeholder="Search property or room" aria-label="Search bookings" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+                  <select value={bookingStatusFilter} onChange={(event) => setBookingStatusFilter(event.target.value)} aria-label="Filter bookings by status" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+                    <option value="all">All statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+                <table className="w-full min-w-[42rem] text-sm">
+                  <thead className="bg-[var(--muted)]"><tr>{["Property", "Room", "Lease dates", "Monthly rent", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                  <PaginatedTableBody
+                    rows={filteredBookings}
+                    columns={6}
+                    resetKey={`${bookingSearch}|${bookingStatusFilter}`}
+                    emptyMessage="No bookings match your search or status filter."
+                    renderRow={(booking) => (
+                      <tr key={booking.id} className="hover:bg-[var(--muted)]">
+                        <td className="px-4 py-3 font-medium">{booking.propertyTitle}</td>
+                        <td className="px-4 py-3">{booking.roomName}</td>
+                        <td className="px-4 py-3 text-xs">{booking.startDate} → {booking.endDate}</td>
+                        <td className="px-4 py-3">₱{Number(booking.monthlyRate).toLocaleString()}/mo</td>
+                        <td className="px-4 py-3"><span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-xs font-semibold text-[var(--primary)]">{booking.status}</span></td>
+                        <td className="px-4 py-3"><button type="button" onClick={() => setBookingDetail(booking)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">View details</button></td>
+                      </tr>
+                    )}
+                  />
+                </table>
               </div>
             </div>
           )}
@@ -268,20 +322,17 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
       {/* ── Roommate Requests ── */}
       {activeTab === "roommates" && (
         <div className="space-y-6">
-          {/* How it works banner */}
           <div className="bg-[var(--secondary)] border border-[var(--primary)]/15 rounded-xl p-4 flex gap-3 text-sm">
             <span className="text-xl flex-shrink-0">ℹ️</span>
             <div className="text-[var(--primary)]">
-              <span className="font-semibold">How roommate requests work:</span> You send a request to a landlord for a specific room. The
-              landlord reviews it and proposes the best-matching <strong>same-sex</strong> student from their tenant pool. You'll be
-              notified when a match is suggested.
+              Roommate requests are sent directly to the landlord through Messages. Matching and request status are not tracked as separate records yet.
             </div>
           </div>
 
           {requestStep === "list" && (
             <>
               <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl font-semibold">My Requests</h2>
+                <h2 className="font-display text-xl font-semibold">Request a Roommate</h2>
                 <button
                   onClick={() => setRequestStep("form")}
                   className="px-4 py-2 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
@@ -289,61 +340,9 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                   + New Request
                 </button>
               </div>
-
-              {myRequests.length === 0 ? (
-                <div className="text-center py-12 text-[var(--muted-foreground)]">
-                  <div className="text-4xl mb-3">🤝</div>
-                  <p className="text-sm font-medium">No roommate requests yet.</p>
-                  <p className="text-xs mt-1">Submit a request and let the landlord find you a compatible same-sex match.</p>
-                  <button
-                    onClick={() => setRequestStep("form")}
-                    className="mt-4 px-5 py-2.5 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90"
-                  >
-                    Submit a Request
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {myRequests.map((req) => (
-                    <div key={req.id} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-                      <div className="flex items-start justify-between gap-4 mb-4">
-                        <div>
-                          <h3 className="font-semibold text-sm">{req.propertyTitle}</h3>
-                          <p className="text-xs text-[var(--muted-foreground)] mt-0.5">
-                            {req.roomName} · Move-in: {req.moveInDate}
-                          </p>
-                        </div>
-                        <span
-                          className={`px-2.5 py-1 rounded-full text-xs font-semibold border ${statusColors(req.status)} capitalize flex-shrink-0`}
-                        >
-                          {req.status === "pending" ? "⏳ Pending" : req.status === "matched" ? "✓ Match Found" : "✗ Declined"}
-                        </span>
-                      </div>
-                      <div className="bg-[var(--muted)] rounded-lg p-3 text-xs text-[var(--muted-foreground)] mb-3">
-                        <span className="font-medium text-[var(--foreground)]">Your note:</span> {req.note}
-                      </div>
-                      <div className="flex items-center gap-2 text-xs text-[var(--muted-foreground)]">
-                        <span className={`px-2 py-0.5 rounded-full font-medium ${genderBadgeClass}`}>
-                          {genderText ? `${genderLabel(gender)}-only match` : "Gender not set"}
-                        </span>
-                        <span>·</span>
-                        <span>Submitted {req.createdAt}</span>
-                      </div>
-                      <button
-                        onClick={() => setRequestStep("shortlist")}
-                        className="mt-4 px-4 py-2 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90"
-                      >
-                        Choose from Landlord Shortlist
-                      </button>
-                      {req.status === "matched" && (
-                        <div className="mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-sm text-emerald-800">
-                          🎉 The landlord found a compatible roommate match! Check your chat for their suggestion.
-                        </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              )}
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-sm text-[var(--muted-foreground)]">
+                New requests are sent as messages and can be continued from the Messages page.
+              </div>
             </>
           )}
 
@@ -359,7 +358,7 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                 <h2 className="font-display text-xl font-semibold">Request a Roommate</h2>
               </div>
               <div className="rounded-xl border border-[var(--primary)] bg-[var(--secondary)] p-4 text-sm text-[var(--primary)]">
-                You can only request a roommate for a room that fits 2 or more people, and your roommate must be the same gender as you.
+                Select an available shared room. The landlord will receive your request in Messages and can confirm roommate compatibility.
               </div>
               <div className="grid lg:grid-cols-[minmax(0,2fr)_minmax(15rem,1fr)] gap-4 items-start">
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 space-y-4">
@@ -367,101 +366,48 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                     <label className="block text-xs font-semibold mb-1.5">Select a Property</label>
                     <select
                       value={selectedPropertyId}
-                      onChange={(e) => setSelectedPropertyId(e.target.value)}
+                      onChange={(e) => {
+                        setSelectedPropertyId(e.target.value);
+                        setSelectedRoomId("");
+                      }}
                       className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
                     >
-                      {sharedProperties
-                        .filter((property) => property.id === "p2")
-                        .map((property) => (
+                      <option value="">Select a property</option>
+                      {sharedProperties.map((property) => (
                           <option key={property.id} value={property.id}>
                             {property.title}
                           </option>
-                        ))}
+                      ))}
                     </select>
                   </div>
                   <div>
                     <label className="block text-xs font-semibold mb-1.5">Select a Room</label>
                     <div className="space-y-2">
-                      {[
-                        {
-                          id: "r2a",
-                          name: "Room 1 — Bed A",
-                          detail: "Capacity 2 · 1 of 2 occupied · ₱4,200/mo",
-                          badge: "ELIGIBLE",
-                          eligible: true,
-                        },
-                        {
-                          id: "boys",
-                          name: "Room 2 — Boys Only",
-                          detail: "Capacity 2 · 1 of 2 occupied",
-                          badge: "NOT ELIGIBLE · Gender",
-                          eligible: false,
-                        },
-                        {
-                          id: "single",
-                          name: "Room 4 — Single Room",
-                          detail: "Capacity 1 · private",
-                          badge: "NOT ELIGIBLE · Capacity",
-                          eligible: false,
-                        },
-                      ].map((room) => (
+                      {eligibleRooms.map((room) => (
                         <label
                           key={room.id}
-                          className={`flex items-center gap-3 rounded-xl border p-3 ${room.eligible && selectedRoomId === room.id ? "border-[var(--primary)] bg-[var(--secondary)]" : "border-[var(--border)]"} ${room.eligible ? "cursor-pointer" : "opacity-65"}`}
+                          className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 ${selectedRoomId === room.id ? "border-[var(--primary)] bg-[var(--secondary)]" : "border-[var(--border)]"}`}
                         >
                           <input
                             type="radio"
                             name="room"
                             checked={selectedRoomId === room.id}
-                            disabled={!room.eligible}
                             onChange={() => setSelectedRoomId(room.id)}
                             className="accent-[var(--primary)]"
                           />
                           <div className="flex-1">
                             <div className="text-sm font-medium">{room.name}</div>
-                            <div className="text-[10px] text-[var(--muted-foreground)]">{room.detail}</div>
+                            <div className="text-[10px] text-[var(--muted-foreground)]">Capacity {room.capacity} · ₱{Number(room.price).toLocaleString()}/mo</div>
                           </div>
-                          <span
-                            className={`rounded-full px-2 py-0.5 text-[9px] font-semibold ${room.eligible ? "bg-emerald-100 text-emerald-700" : "bg-red-100 text-red-700"}`}
-                          >
-                            {room.badge}
-                          </span>
+                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-semibold text-emerald-700">Available</span>
                         </label>
                       ))}
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1.5">How would you like to find a roommate?</label>
-                    <div className="space-y-2">
-                      {[
-                        {
-                          id: "landlord",
-                          title: "Let the landlord choose",
-                          description: "The landlord shortlists compatible students and you pick from that list.",
-                        },
-                        {
-                          id: "vouch",
-                          title: "I have someone in mind (vouch)",
-                          description: "Name a classmate. The landlord decides whether to accept.",
-                        },
-                      ].map((method) => (
-                        <label
-                          key={method.id}
-                          className={`flex items-center gap-3 rounded-xl border p-3 cursor-pointer ${roommateChoiceMethod === method.id ? "border-[var(--primary)] bg-[var(--secondary)]" : "border-[var(--border)]"}`}
-                        >
-                          <input
-                            type="radio"
-                            name="choice-method"
-                            checked={roommateChoiceMethod === method.id}
-                            onChange={() => setRoommateChoiceMethod(method.id)}
-                            className="accent-[var(--primary)]"
-                          />
-                          <div>
-                            <div className="text-sm font-medium">{method.title}</div>
-                            <div className="text-[10px] text-[var(--muted-foreground)]">{method.description}</div>
-                          </div>
-                        </label>
-                      ))}
+                      {selectedProperty && eligibleRooms.length === 0 && (
+                        <p className="rounded-xl border border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)]">This property has no available shared rooms.</p>
+                      )}
+                      {!selectedProperty && sharedProperties.length === 0 && (
+                        <p className="rounded-xl border border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)]">No published properties currently have available shared rooms.</p>
+                      )}
                     </div>
                   </div>
                   <div>
@@ -487,115 +433,31 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                   </div>
                   <button
                     onClick={submitRequest}
-                    disabled={!selectedPropertyId || !selectedRoomId || !moveInDate}
+                    disabled={requestBusy || !session?.accountId || !selectedProperty?.landlordAccountId || !eligibleRooms.some((room) => room.id === selectedRoomId) || !moveInDate}
                     className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-white disabled:opacity-40"
                   >
-                    Submit Roommate Request
+                    {requestBusy ? "Sending request…" : "Send Roommate Request"}
                   </button>
                 </div>
                 <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-                  <h3 className="font-semibold">Eligibility Check</h3>
-                  <p className="text-xs text-[var(--muted-foreground)] mt-2">Room 1 — Bed A</p>
+                  <h3 className="font-semibold">Request Details</h3>
+                  <p className="text-xs text-[var(--muted-foreground)] mt-2">{selectedSharedRoom?.name || "Select a room"}</p>
                   <div className="mt-3 space-y-2">
-                    {["Room fits 2 or more people", "A bed is still available", `Same gender as you (${genderText || "not set"})`].map((item) => (
-                      <div key={item} className="flex items-center gap-2 text-xs">
-                        <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">✓</span>
-                        {item}
+                    {[
+                      ["Room", selectedSharedRoom ? "Shared room selected" : "Choose an available shared room"],
+                      ["Availability", selectedSharedRoom ? "Currently available" : "Based on live listing data"],
+                      ["Gender", genderText ? `${genderText} preference included in message` : "Not set on your profile"],
+                    ].map(([label, value]) => (
+                      <div key={label} className="flex flex-col gap-0.5 text-xs">
+                        <span className="font-semibold">{label}</span>
+                        <span className="text-[var(--muted-foreground)]">{value}</span>
                       </div>
                     ))}
                   </div>
                   <p className="mt-3 text-[10px] text-[var(--muted-foreground)]">
-                    Single-occupancy rooms and rooms reserved for another gender can't be requested.
+                    Only live properties and rooms marked available are included.
                   </p>
                 </div>
-              </div>
-            </div>
-          )}
-
-          {requestStep === "shortlist" && (
-            <div className="space-y-4">
-              <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setRequestStep("list")}
-                  className="text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                >
-                  ← Back
-                </button>
-                <h2 className="font-display text-xl font-semibold">Choose Your Roommate</h2>
-              </div>
-              <div className="rounded-xl border border-[var(--primary)] bg-[var(--secondary)] p-4 text-sm text-[var(--primary)]">
-                Your landlord shortlisted 3 students for Room 1 — Bed A. You can only choose from this list, or vouch for someone you know.
-              </div>
-              <div className="grid md:grid-cols-3 gap-4">
-                {STUDENT_SHORTLIST.map((candidate) => {
-                  const selected = shortlistChoice === candidate.id;
-                  return (
-                    <button
-                      key={candidate.id}
-                      onClick={() => setShortlistChoice(candidate.id)}
-                      className={`rounded-2xl border bg-[var(--card)] p-4 text-left transition-colors ${selected ? "border-2 border-[var(--primary)]" : "border-[var(--border)] hover:border-[var(--primary)]/50"}`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--primary)] text-white">
-                          {candidate.initial}
-                        </div>
-                        <div>
-                          <div className="font-semibold">{candidate.name}</div>
-                          <div className="text-xs text-[var(--muted-foreground)]">{candidate.program}</div>
-                        </div>
-                      </div>
-                      <span className="mt-3 inline-flex rounded-full bg-pink-100 px-2 py-0.5 text-[10px] text-pink-700">♀ Female</span>
-                      <div className="mt-3 flex items-center gap-2">
-                        <div className="h-1.5 flex-1 rounded-full bg-[var(--muted)]">
-                          <div
-                            className={`h-full rounded-full ${candidate.score >= 80 ? "bg-[var(--primary)]" : "bg-amber-600"}`}
-                            style={{ width: `${candidate.score}%` }}
-                          />
-                        </div>
-                        <span className={`text-sm font-semibold ${candidate.score >= 80 ? "text-[var(--primary)]" : "text-amber-700"}`}>
-                          {candidate.score}%
-                        </span>
-                      </div>
-                      <div className="mt-3 flex flex-wrap gap-1">
-                        {["Sleep", "Clean", "Study", "Guests"].map((trait) => (
-                          <span
-                            key={trait}
-                            className={`rounded-full px-2 py-0.5 text-[10px] ${candidate.partial.includes(trait) ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}
-                          >
-                            {trait}
-                          </span>
-                        ))}
-                      </div>
-                      <div
-                        className={`mt-4 rounded-lg py-2 text-center text-xs font-semibold ${selected ? "bg-[var(--primary)] text-white" : "border border-[var(--border)]"}`}
-                      >
-                        {selected ? "Selected ✓" : "Select"}
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="flex flex-col sm:flex-row sm:items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-                <div className="flex-1">
-                  <div className="text-sm font-semibold">Know someone you'd rather room with?</div>
-                  <div className="text-xs text-[var(--muted-foreground)]">
-                    Vouch for a classmate. The landlord decides whether to accept.
-                  </div>
-                </div>
-                <button
-                  onClick={() => setVouchOpen(true)}
-                  className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm font-medium"
-                >
-                  Vouch for Someone
-                </button>
-              </div>
-              <div className="flex justify-end">
-                <button
-                  onClick={() => setRequestStep("submitted")}
-                  className="rounded-xl bg-[var(--primary)] px-5 py-2.5 text-sm font-semibold text-white"
-                >
-                  Confirm Roommate Choice
-                </button>
               </div>
             </div>
           )}
@@ -608,8 +470,7 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                 Your roommate request has been sent to <strong>{selectedProperty?.landlordName}</strong>.
               </p>
               <p className="text-sm text-[var(--muted-foreground)] mb-6">
-                They'll review your profile and find the best-matching <span className="font-medium text-pink-700">female</span> student
-                from their tenant pool. You'll be notified here and via chat when a match is suggested.
+                This request is a message, not a separately tracked request record. Continue the conversation from Messages.
               </p>
               <div className="bg-[var(--secondary)] rounded-2xl p-4 text-left text-sm mb-6 space-y-2">
                 <div className="flex justify-between">
@@ -624,19 +485,26 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
                   <span className="text-[var(--muted-foreground)]">Move-in</span>
                   <span className="font-medium">{moveInDate}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--muted-foreground)]">Match type</span>
-                  <span className={`font-medium ${gender === "Female" ? "text-pink-700" : gender === "Male" ? "text-blue-700" : "text-[var(--muted-foreground)]"}`}>
-                    {genderText ? `${genderLabel(gender)} only` : "Gender not set"}
-                  </span>
-                </div>
               </div>
-              <button
-                onClick={() => setRequestStep("list")}
-                className="px-6 py-3 bg-[var(--primary)] text-white rounded-xl font-semibold hover:opacity-90"
-              >
-                View My Requests
-              </button>
+              <div className="flex flex-col justify-center gap-3 sm:flex-row">
+                <button
+                  onClick={() => {
+                    if (onStartChat) {
+                      onStartChat({
+                        accountId: Number(selectedProperty?.landlordAccountId),
+                        name: selectedProperty?.landlordName,
+                        propertyTitle: selectedProperty?.title,
+                        profilePhotoUrl: selectedProperty?.landlordAvatar,
+                      });
+                    }
+                    else onNavigate("chat");
+                  }}
+                  className="rounded-xl bg-[var(--primary)] px-6 py-3 font-semibold text-white hover:opacity-90"
+                >
+                  Open Messages
+                </button>
+                <button onClick={() => setRequestStep("list")} className="rounded-xl border border-[var(--border)] px-6 py-3 font-semibold">Done</button>
+              </div>
             </div>
           )}
         </div>
@@ -645,28 +513,51 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
       {/* ── Saved ── */}
       {activeTab === "saved" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-display text-xl font-semibold">Saved Listings</h2>
-            <button onClick={() => onNavigate("listings")} className="text-sm text-[var(--primary)] font-medium hover:underline">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Saved Listings</h2>
+              <p className="mt-1 text-xs text-[var(--muted-foreground)]">{filteredSavedProperties.length} of {savedProperties.length} saved listings</p>
+            </div>
+            <button onClick={() => onNavigate("listings")} className="text-left text-sm font-medium text-[var(--primary)] hover:underline sm:text-right">
               Browse more →
             </button>
           </div>
-          <div className="grid sm:grid-cols-2 gap-4">
-            {savedProperties.length === 0 && (
-              <p className="text-sm text-[var(--muted-foreground)] col-span-full">No saved listings yet. Open a property and tap “Save listing”.</p>
-            )}
-            {savedProperties.map((p) => (
-              <PropertyCard
-                key={p.id}
-                property={p}
-                onClick={() => {
-                  onSelectProperty(p.id);
-                  onNavigate("detail");
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input type="search" value={savedSearch} onChange={(event) => setSavedSearch(event.target.value)} placeholder="Search saved listings" aria-label="Search saved listings" className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+            <select value={savedAvailabilityFilter} onChange={(event) => setSavedAvailabilityFilter(event.target.value)} aria-label="Filter saved listings by room availability" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+              <option value="all">All availability</option>
+              <option value="available">Has available rooms</option>
+              <option value="full">No available rooms</option>
+            </select>
+          </div>
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[46rem] text-sm">
+              <thead className="bg-[var(--muted)]"><tr>{["Listing", "Address", "Rooms available", "Starting rent", "Safety", "Actions"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+              <PaginatedTableBody
+                rows={filteredSavedProperties}
+                columns={6}
+                resetKey={`${savedSearch}|${savedAvailabilityFilter}`}
+                emptyMessage={savedProperties.length ? "No saved listings match your search or availability filter." : "No saved listings yet. Browse properties and save one to see it here."}
+                renderRow={(property) => {
+                  const available = property.rooms.filter((room) => room.status === "available").length;
+                  return (
+                    <tr key={property.id} className="hover:bg-[var(--muted)]">
+                      <td className="px-4 py-3 font-medium">{property.title}</td>
+                      <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{property.address}</td>
+                      <td className="px-4 py-3">{available} / {property.rooms.length}</td>
+                      <td className="px-4 py-3">₱{Number(property.monthlyRent).toLocaleString()}/mo</td>
+                      <td className="px-4 py-3 font-semibold">{Number(property.safetyScore).toFixed(1)}/10</td>
+                      <td className="px-4 py-3">
+                        <div className="flex gap-2">
+                          <button type="button" onClick={() => { onSelectProperty(property.id); onNavigate("detail"); }} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">View</button>
+                          <button type="button" onClick={() => onCompare(property.id)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-semibold">{comparedIds.includes(property.id) ? "Remove compare" : "Compare"}</button>
+                        </div>
+                      </td>
+                    </tr>
+                  );
                 }}
-                onCompare={onCompare}
-                inComparison={comparedIds.includes(p.id)}
               />
-            ))}
+            </table>
           </div>
           {comparedIds.length > 0 && (
             <div className="mt-4 p-4 bg-[var(--secondary)] border border-[var(--primary)]/20 rounded-xl flex items-center justify-between">
@@ -692,7 +583,7 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
               <div className="text-5xl mb-4">🎉</div>
               <h2 className="font-display text-2xl font-semibold mb-2">Quiz complete!</h2>
               <p className="text-[var(--muted-foreground)] mb-6">
-                Your compatibility profile is saved. Landlords can use it to find your best same-sex match.
+                Your roommate preferences are saved to your student profile. The quiz does not create or rank roommate matches.
               </p>
               <div className="bg-[var(--secondary)] rounded-2xl p-6 text-left mb-6">
                 <h3 className="font-semibold text-sm mb-3">Your Profile</h3>
@@ -745,83 +636,43 @@ export default function StudentDashboard({ onNavigate, onSelectProperty, compare
         </div>
       )}
 
-      {vouchOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm" role="presentation">
-          <div
-            className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6 shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="vouch-title"
-          >
-            <div className="flex items-start justify-between gap-4">
+      {bookingDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="student-booking-detail-title">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
               <div>
-                <h3 id="vouch-title" className="font-display text-xl font-semibold">
-                  Vouch for a Roommate
-                </h3>
-                <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                  Name a student you'd like to room with. The landlord decides whether to accept.
-                </p>
+                <h3 id="student-booking-detail-title" className="font-display text-lg font-semibold">Booking details</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">{bookingDetail.propertyTitle} · {bookingDetail.roomName}</p>
               </div>
-              <button
-                onClick={() => setVouchOpen(false)}
-                className="text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                aria-label="Close vouch form"
-              >
-                ×
-              </button>
+              <button type="button" onClick={() => setBookingDetail(null)} aria-label="Close booking details" className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--border)]">✕</button>
             </div>
-            <div className="mt-4 space-y-4">
-              <div>
-                <label htmlFor="vouch-student" className="block text-xs font-medium mb-1.5">
-                  Student name or ID
-                </label>
-                <input
-                  id="vouch-student"
-                  value={vouchStudent}
-                  onChange={(event) => setVouchStudent(event.target.value)}
-                  className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                />
-              </div>
-              <div>
-                <label htmlFor="vouch-reason" className="block text-xs font-medium mb-1.5">
-                  Why would you be a good match?
-                </label>
-                <textarea
-                  id="vouch-reason"
-                  value={vouchReason}
-                  onChange={(event) => setVouchReason(event.target.value)}
-                  placeholder="Share why you'd be compatible roommates…"
-                  rows={3}
-                  className="w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                />
-              </div>
-              <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 space-y-2">
-                {[`Same gender as you (${genderText || "not set"})`, "Not already assigned to another room"].map((item) => (
-                  <div key={item} className="flex items-center gap-2 text-xs">
-                    <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-emerald-700">✓</span>
-                    {item}
-                  </div>
-                ))}
-              </div>
+            <div className="grid gap-4 p-5 sm:grid-cols-2">
+              {[
+                ["Status", bookingDetail.status],
+                ["Monthly rent", `₱${Number(bookingDetail.monthlyRate).toLocaleString()}`],
+                ["Lease starts", bookingDetail.startDate],
+                ["Lease ends", bookingDetail.endDate],
+              ].map(([label, value]) => <div key={label}><div className="text-xs text-[var(--muted-foreground)]">{label}</div><div className="mt-1 text-sm font-medium">{value}</div></div>)}
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                onClick={() => setVouchOpen(false)}
-                className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm font-medium"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setVouchOpen(false);
-                  setRequestStep("submitted");
-                }}
-                disabled={!vouchStudent.trim() || !vouchReason.trim()}
-                className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
-              >
-                Submit Vouch
-              </button>
+            <div className="flex justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <button type="button" onClick={() => setBookingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+              {["Pending", "Confirmed"].includes(bookingDetail.status) && (
+                <button type="button" onClick={() => cancelBooking(bookingDetail)} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Cancel booking</button>
+              )}
             </div>
+          </div>
+        </div>
+      )}
+
+      {dashboardNotice && (
+        <div className="fixed right-4 top-4 z-[60] w-[min(22.5rem,calc(100vw-2rem))] rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 shadow-xl" role="status">
+          <div className="flex gap-3">
+            <span className={`mt-1 h-2 w-2 flex-shrink-0 rounded-full ${dashboardNotice.error ? "bg-red-500" : "bg-emerald-500"}`} />
+            <div className="flex-1">
+              <div className="text-xs font-semibold">{dashboardNotice.title}</div>
+              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{dashboardNotice.message}</p>
+            </div>
+            <button type="button" onClick={() => setDashboardNotice(null)} aria-label="Dismiss dashboard notification" className="text-[var(--muted-foreground)]">×</button>
           </div>
         </div>
       )}

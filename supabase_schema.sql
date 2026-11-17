@@ -37,6 +37,7 @@ DROP FUNCTION IF EXISTS my_room_ids() CASCADE;
 DROP FUNCTION IF EXISTS my_booking_ids() CASCADE;
 DROP FUNCTION IF EXISTS is_staff() CASCADE;
 DROP FUNCTION IF EXISTS is_superadmin() CASCADE;
+DROP FUNCTION IF EXISTS public.get_public_room_bookings(BIGINT) CASCADE;
 DROP FUNCTION IF EXISTS create_staff_user(TEXT, TEXT, TEXT, TEXT) CASCADE;
 
 DROP TYPE IF EXISTS room_amenity CASCADE;
@@ -71,6 +72,7 @@ CREATE TABLE accounts (
     password_hash TEXT NOT NULL DEFAULT '(managed by supabase auth)',
     role user_role NOT NULL DEFAULT 'Student',
     mfa_enabled BOOLEAN DEFAULT FALSE,
+    profile_photo_url TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT check_student_email_domain CHECK (
         role <> 'Student' OR LOWER(email) LIKE '%@addu.edu.ph'
@@ -83,7 +85,8 @@ CREATE TABLE landlords (
     full_name TEXT NOT NULL,
     phone_number TEXT,
     government_id TEXT,
-    proof_of_ownership_url TEXT
+    proof_of_ownership_url TEXT,
+    profile_photo_url TEXT
 );
 
 CREATE TABLE students (
@@ -100,7 +103,8 @@ CREATE TABLE students (
     pref_sleep_schedule INT CHECK (pref_sleep_schedule BETWEEN 1 AND 3),
     pref_study_habits INT CHECK (pref_study_habits BETWEEN 1 AND 3),
     pref_cleanliness INT CHECK (pref_cleanliness BETWEEN 1 AND 5),
-    pref_guest_policy INT CHECK (pref_guest_policy BETWEEN 1 AND 3)
+    pref_guest_policy INT CHECK (pref_guest_policy BETWEEN 1 AND 3),
+    profile_photo_url TEXT
 );
 
 CREATE UNIQUE INDEX students_id_number_key
@@ -122,6 +126,8 @@ CREATE TABLE property_verifications (
     isp_bill_url TEXT,
     water_proof_url TEXT,
     safety_audit_url TEXT,
+    government_id_url TEXT,
+    proof_of_ownership_url TEXT,
     verification_status verification_status NOT NULL DEFAULT 'Pending',
     rejection_reason TEXT,
     admin_reviewer_id BIGINT REFERENCES accounts(account_id),
@@ -137,6 +143,7 @@ CREATE TABLE boarding_houses (
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
     description TEXT,
+    image_urls TEXT[] NOT NULL DEFAULT '{}',
     listing_status listing_status NOT NULL DEFAULT 'Pending',
     rejection_reason TEXT,
     safety_score DECIMAL(3, 1),
@@ -165,7 +172,8 @@ CREATE TABLE rooms (
     security_deposit DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
     capacity INT NOT NULL DEFAULT 1,
     availability_status room_status NOT NULL DEFAULT 'Available',
-    amenities room_amenity[] NOT NULL DEFAULT '{}'
+    amenities room_amenity[] NOT NULL DEFAULT '{}',
+    image_urls TEXT[] NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE bookings (
@@ -174,14 +182,31 @@ CREATE TABLE bookings (
     room_id BIGINT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
+    actual_end_date DATE,
     status booking_status NOT NULL DEFAULT 'Pending',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     CONSTRAINT valid_booking_dates CHECK (end_date > start_date),      -- FIX
+    CONSTRAINT valid_actual_booking_end_date CHECK (actual_end_date IS NULL OR actual_end_date >= start_date),
     CONSTRAINT prevent_overlapping_bookings EXCLUDE USING gist (
         room_id WITH =,
         daterange(start_date, end_date, '[)') WITH &&
     ) WHERE (status IN ('Pending', 'Confirmed'))
 );
+
+CREATE OR REPLACE FUNCTION public.get_public_room_bookings(p_house_id BIGINT)
+RETURNS TABLE (room_id BIGINT, start_date DATE, end_date DATE, status TEXT)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+    SELECT b.room_id, b.start_date, b.end_date, b.status::TEXT
+    FROM public.bookings b
+    JOIN public.rooms r ON r.room_id = b.room_id
+    JOIN public.boarding_houses h ON h.house_id = r.house_id
+    WHERE h.house_id = p_house_id
+      AND h.listing_status = 'Published'
+      AND b.status IN ('Pending', 'Confirmed')
+    ORDER BY b.start_date;
+$$;
+REVOKE ALL ON FUNCTION public.get_public_room_bookings(BIGINT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_public_room_bookings(BIGINT) TO anon, authenticated;
 
 CREATE TABLE invoices (
     invoice_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -499,7 +524,7 @@ ALTER TABLE system_settings ENABLE ROW LEVEL SECURITY;
 
 -- FIX: users must never be able to change their own role/email/auth_id
 REVOKE UPDATE ON accounts FROM anon, authenticated;
-GRANT UPDATE (mfa_enabled) ON accounts TO authenticated;
+GRANT UPDATE (mfa_enabled, profile_photo_url) ON accounts TO authenticated;
 
 -- ==============================================================================
 -- 6. POLICIES
@@ -550,11 +575,18 @@ CREATE POLICY student_select_rooms ON rooms FOR SELECT USING (house_id IN (SELEC
 CREATE POLICY student_select_bookings ON bookings FOR SELECT USING (student_id = auth_student_id());
 CREATE POLICY student_insert_bookings ON bookings FOR INSERT WITH CHECK (
     student_id = auth_student_id() AND status = 'Pending'
+    AND start_date >= CURRENT_DATE
     AND room_id IN (SELECT room_id FROM rooms WHERE house_id IN (SELECT house_id FROM boarding_houses WHERE listing_status = 'Published'))
 );
 CREATE POLICY student_cancel_bookings ON bookings FOR UPDATE USING (student_id = auth_student_id()) WITH CHECK (student_id = auth_student_id() AND status = 'Cancelled');
 CREATE POLICY landlord_select_bookings ON bookings FOR SELECT USING (booking_id IN (SELECT my_booking_ids()));
-CREATE POLICY landlord_update_bookings ON bookings FOR UPDATE USING (booking_id IN (SELECT my_booking_ids())) WITH CHECK (booking_id IN (SELECT my_booking_ids()));
+CREATE POLICY landlord_update_bookings ON bookings FOR UPDATE USING (booking_id IN (SELECT my_booking_ids())) WITH CHECK (
+    booking_id IN (SELECT my_booking_ids())
+    AND (
+        status <> 'Completed'
+        OR (actual_end_date IS NOT NULL AND actual_end_date >= start_date AND actual_end_date <= CURRENT_DATE)
+    )
+);
 
 CREATE POLICY student_select_invoices ON invoices FOR SELECT USING (booking_id IN (SELECT booking_id FROM bookings WHERE student_id = auth_student_id()));
 CREATE POLICY landlord_manage_invoices ON invoices FOR ALL USING (booking_id IN (SELECT my_booking_ids())) WITH CHECK (booking_id IN (SELECT my_booking_ids()));
@@ -654,6 +686,11 @@ $$;
 
 -- Nobody but postgres/service role can call it
 REVOKE ALL ON FUNCTION public.create_staff_user(TEXT, TEXT, TEXT, TEXT) FROM PUBLIC, anon, authenticated;
+
+-- Realtime listing updates allow clients to refresh safety scores immediately.
+DO $$ BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.boarding_houses;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ==============================================================================
 -- 7b. CACHE REFRESH

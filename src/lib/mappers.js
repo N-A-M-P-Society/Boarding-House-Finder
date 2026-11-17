@@ -168,10 +168,16 @@ function safetyBreakdown(inspection) {
   */
   if (!inspection) {
     return {
+      policeDistanceMeters: null,
       policeProximity: 0,
+      lightingRating: null,
       lighting: 0,
       gatedAccess: 0,
-      cctv: 0
+      hasGatedAccess: false,
+      cctv: 0,
+      cctvActive: null,
+      cctvRequired: null,
+      inspectedAt: null
     };
   }
 
@@ -179,6 +185,12 @@ function safetyBreakdown(inspection) {
   const dist = num(inspection.police_distance_m);
 
   return {
+    policeDistanceMeters: dist,
+    lightingRating: num(inspection.lighting_rating),
+    hasGatedAccess: Boolean(inspection.has_gated_access),
+    cctvActive: num(inspection.cctv_active),
+    cctvRequired: num(inspection.cctv_required),
+    inspectedAt: (inspection.inspection_date || "").slice(0, 10) || null,
 
     /*
       POLICE PROXIMITY SCORE
@@ -317,6 +329,7 @@ export function mapRoom(r) {
 
     // Maximum number of occupants allowed in the room.
     capacity: r.capacity,
+    images: Array.isArray(r.image_urls) ? r.image_urls : [],
 
     /*
       Convert database amenity values into readable frontend labels.
@@ -502,8 +515,7 @@ export function mapHouse(h, gates, landlordsById = {}) {
     // Use null if the landlord's account ID is unavailable.
     landlordAccountId: landlord?.account_id ?? null,
 
-    // No landlord avatar is retrieved here.
-    landlordAvatar: null,
+    landlordAvatar: landlord?.profile_photo_url || null,
 
     // Basic property information.
     title: h.house_name,

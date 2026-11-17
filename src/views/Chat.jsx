@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase.js";
-import { fetchMessages, sendMessage as sendMessageRow, markRead, fetchAccountNames } from "../lib/api.js";
+import { fetchMessages, sendMessage as sendMessageRow, markRead, fetchAccountNames, loadProfile } from "../lib/api.js";
 const avatarFor = (name) =>
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
@@ -26,9 +26,12 @@ const QUICK_REPLIES_LANDLORD = [
   "Please send a valid school ID for verification.",
   "The room will be ready by August 1.",
 ];
-export default function Chat({ userRole, session, chatTarget }) {
+export default function Chat({ userRole, session, chatTarget, onMessagesRead }) {
   const [rows, setRows] = useState([]);
   const [names, setNames] = useState({});
+  const [myProfilePhotoUrl, setMyProfilePhotoUrl] = useState(
+    session?.student?.profile_photo_url || session?.landlord?.profile_photo_url || session?.profile_photo_url || ""
+  );
   const [extraPeers, setExtraPeers] = useState({}); // peers started from "Message Landlord" before any message exists
   const [activeConvId, setActiveConvId] = useState(null);
   const [input, setInput] = useState("");
@@ -52,6 +55,26 @@ export default function Chat({ userRole, session, chatTarget }) {
   useEffect(() => {
     load();
   }, [load]);
+  useEffect(() => {
+    let active = true;
+    loadProfile()
+      .then((profile) => {
+        if (active) {
+          setMyProfilePhotoUrl(
+            profile?.student?.profile_photo_url ||
+            profile?.landlord?.profile_photo_url ||
+            profile?.profile_photo_url ||
+            ""
+          );
+        }
+      })
+      .catch((loadError) => {
+        if (active) setError(loadError.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
 
   // Live updates (enable Realtime on public.messages — see README)
   useEffect(() => {
@@ -75,7 +98,14 @@ export default function Chat({ userRole, session, chatTarget }) {
   // Opening a chat from a property page
   useEffect(() => {
     if (chatTarget?.accountId) {
-      setExtraPeers((p) => ({ ...p, [chatTarget.accountId]: { name: chatTarget.name, propertyTitle: chatTarget.propertyTitle } }));
+      setExtraPeers((p) => ({
+        ...p,
+        [chatTarget.accountId]: {
+          name: chatTarget.name,
+          propertyTitle: chatTarget.propertyTitle,
+          profilePhotoUrl: chatTarget.profilePhotoUrl
+        }
+      }));
       setActiveConvId(String(chatTarget.accountId));
     }
   }, [chatTarget]);
@@ -85,6 +115,8 @@ export default function Chat({ userRole, session, chatTarget }) {
   const conversations = Array.from(peerIds).map((peerId) => {
     const peerName = names[peerId]?.name || extraPeers[peerId]?.name || "User";
     const myName = session?.name || "You";
+    const myAvatar = myProfilePhotoUrl || avatarFor(myName);
+    const peerAvatar = names[peerId]?.profilePhotoUrl || extraPeers[peerId]?.profilePhotoUrl || avatarFor(peerName);
     const msgs = rows
       .filter((m) => (m.sender_id === myAccountId && m.receiver_id === peerId) || (m.sender_id === peerId && m.receiver_id === myAccountId))
       .map((m) => {
@@ -93,7 +125,7 @@ export default function Chat({ userRole, session, chatTarget }) {
           id: String(m.message_id),
           senderId: m.sender_id,
           senderName: mine ? "You" : peerName,
-          senderAvatar: avatarFor(mine ? myName : peerName),
+          senderAvatar: mine ? myAvatar : peerAvatar,
           senderRole: mine ? (isLandlord ? "landlord" : "student") : isLandlord ? "student" : "landlord",
           content: m.content,
           createdAt: fmtTime(m.created_at),
@@ -103,20 +135,26 @@ export default function Chat({ userRole, session, chatTarget }) {
       });
     const last = msgs[msgs.length - 1];
     const unread = msgs.filter((m) => !m.read && m.senderId !== myAccountId).length;
-    const base = { id: String(peerId), propertyTitle: extraPeers[peerId]?.propertyTitle || "Direct message", propertyImage: avatarFor(peerName), propertyAddress: "", messages: msgs, lastMessage: last?.content || "No messages yet", lastMessageAt: last?.createdAt || "" };
+    const base = { id: String(peerId), propertyTitle: extraPeers[peerId]?.propertyTitle || "Direct message", propertyImage: peerAvatar, propertyAddress: "", messages: msgs, lastMessage: last?.content || "No messages yet", lastMessageAt: last?.createdAt || "" };
     return isLandlord
-      ? { ...base, landlordId: myAccountId, landlordName: myName, landlordAvatar: avatarFor(myName), studentId: peerId, studentName: peerName, studentAvatar: avatarFor(peerName), unreadByLandlord: unread, unreadByStudent: 0 }
-      : { ...base, studentId: myAccountId, studentName: myName, studentAvatar: avatarFor(myName), landlordId: peerId, landlordName: peerName, landlordAvatar: avatarFor(peerName), unreadByStudent: unread, unreadByLandlord: 0 };
+      ? { ...base, landlordId: myAccountId, landlordName: myName, landlordAvatar: myAvatar, studentId: peerId, studentName: peerName, studentAvatar: peerAvatar, unreadByLandlord: unread, unreadByStudent: 0 }
+      : { ...base, studentId: myAccountId, studentName: myName, studentAvatar: myAvatar, landlordId: peerId, landlordName: peerName, landlordAvatar: peerAvatar, unreadByStudent: unread, unreadByLandlord: 0 };
   });
   const activeConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
 
   // Mark incoming messages as read when a conversation is open
   useEffect(() => {
-    if (!activeConv) return;
+    if (!activeConv || !activeConvId || activeConv.id !== activeConvId) return;
     const ids = activeConv.messages.filter((m) => !m.read && m.senderId !== myAccountId).map((m) => m._raw.message_id);
-    if (ids.length) markRead(ids).then(() => setRows((prev) => prev.map((r) => (ids.includes(r.message_id) ? { ...r, is_read: true } : r)))).catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeConv?.id, activeConv?.messages.length]);
+    if (ids.length) {
+      markRead(ids)
+        .then(() => {
+          setRows((prev) => prev.map((row) => (ids.includes(row.message_id) ? { ...row, is_read: true } : row)));
+          onMessagesRead?.();
+        })
+        .catch((markError) => setError(markError.message));
+    }
+  }, [activeConv?.id, activeConv?.messages.length, activeConvId, myAccountId, onMessagesRead]);
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [activeConv?.messages.length]);

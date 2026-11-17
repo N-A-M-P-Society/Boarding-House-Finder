@@ -24,6 +24,7 @@ import {
 // Import API functions used to retrieve campus gates and rental properties
 // from the application's backend.
 import { fetchGates, fetchHouses } from "../lib/api.js";
+import { supabase } from "../lib/supabase.js";
 
 // Import a variable that checks whether Supabase has been configured correctly.
 import { isSupabaseConfigured } from "../lib/supabase.js";
@@ -168,6 +169,22 @@ export function DataProvider({ session, children }) {
     reload();
 
   }, [reload, session?.accountId]);
+  useEffect(() => {
+    if (!isSupabaseConfigured) return;
+    const channel = supabase
+      .channel("boarding-house-updates")
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "boarding_houses",
+      }, () => {
+        reload();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [reload]);
 
   // CAMPUS LOCATION
   // Determine the campus coordinates using the available gate information.

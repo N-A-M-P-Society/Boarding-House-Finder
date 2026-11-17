@@ -12,6 +12,74 @@ const fail = (error) => {
   if (error) throw new Error(error.message || String(error));
 };
 
+const PUBLIC_MEDIA_BUCKET = "unirent-images";
+const PRIVATE_DOCUMENT_BUCKET = "unirent-verification";
+const IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
+const DOCUMENT_TYPES = [...IMAGE_TYPES, "application/pdf"];
+
+async function uploadStorageFiles(files, bucket, folder, allowedTypes, maxBytes, makePublicUrl) {
+  const selectedFiles = Array.from(files || []);
+  if (selectedFiles.length === 0) return [];
+
+  const { data: authData, error: authError } = await supabase.auth.getUser();
+  fail(authError);
+  if (!authData.user) throw new Error("Sign in before uploading files.");
+
+  const uploadedPaths = [];
+  const results = [];
+  try {
+    for (const file of selectedFiles) {
+      if (!allowedTypes.includes(file.type)) {
+        throw new Error(`Unsupported file type for "${file.name}".`);
+      }
+      if (file.size > maxBytes) {
+        throw new Error(`"${file.name}" is too large. Maximum size is ${Math.round(maxBytes / 1024 / 1024)} MB.`);
+      }
+
+      const safeName = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+      const path = `${folder}/${authData.user.id}/${crypto.randomUUID()}-${safeName}`;
+      const { data, error } = await supabase.storage
+        .from(bucket)
+        .upload(path, file, { cacheControl: "3600", contentType: file.type, upsert: false });
+      fail(error);
+      uploadedPaths.push(data.path);
+      results.push(makePublicUrl ? supabase.storage.from(bucket).getPublicUrl(data.path).data.publicUrl : data.path);
+    }
+    return results;
+  } catch (error) {
+    if (uploadedPaths.length > 0) {
+      const { error: cleanupError } = await supabase.storage.from(bucket).remove(uploadedPaths);
+      if (cleanupError) {
+        throw new Error(`${error.message} Uploaded files could not be cleaned up: ${cleanupError.message}`);
+      }
+    }
+    throw error;
+  }
+}
+
+export async function uploadPublicImages(files, folder) {
+  if (!["profiles", "listings", "rooms"].includes(folder)) {
+    throw new Error("Invalid image upload folder.");
+  }
+  return uploadStorageFiles(files, PUBLIC_MEDIA_BUCKET, folder, IMAGE_TYPES, 8 * 1024 * 1024, true);
+}
+
+export async function uploadVerificationDocuments(files) {
+  return uploadStorageFiles(files, PRIVATE_DOCUMENT_BUCKET, "verification", DOCUMENT_TYPES, 10 * 1024 * 1024, false);
+}
+
+async function signedVerificationDocument(path) {
+  if (!path) return null;
+  if (/^https:\/\//i.test(path)) return path;
+  if (!path.startsWith("verification/")) return null;
+
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_DOCUMENT_BUCKET)
+    .createSignedUrl(path, 60 * 60);
+  fail(error);
+  return data.signedUrl;
+}
+
 /* ───────────────────────── Auth ───────────────────────── */
 
 /*
@@ -133,7 +201,7 @@ export async function loadProfile() {
   // Find the user's account record using their Supabase Auth ID.
   const { data: account, error } = await supabase
     .from("accounts")
-    .select("account_id, email, role, mfa_enabled")
+    .select("account_id, email, role, mfa_enabled, profile_photo_url")
     .eq("auth_id", auth.user.id)
     .maybeSingle();
 
@@ -147,7 +215,8 @@ export async function loadProfile() {
     accountId: account.account_id,
     email: account.email,
     dbRole: account.role,
-    role: uiRole(account.role)
+    role: uiRole(account.role),
+    profile_photo_url: account.profile_photo_url
   };
 
   /*
@@ -234,6 +303,15 @@ export async function updateLandlordProfile(landlordId, patch) {
   fail(error);
 }
 
+export async function updateAccountProfile(accountId, patch) {
+  const { error } = await supabase
+    .from("accounts")
+    .update(patch)
+    .eq("account_id", accountId);
+
+  fail(error);
+}
+
 /* ───────────────────────── Listings ───────────────────────── */
 
 /*
@@ -287,7 +365,7 @@ export async function fetchHouses(gates) {
   */
   const { data: ll } = await supabase
     .from("landlord_public")
-    .select("landlord_id, account_id, full_name");
+    .select("landlord_id, account_id, full_name, profile_photo_url");
 
   /*
     Convert the landlord records into an object indexed by landlord_id.
@@ -329,7 +407,8 @@ export async function createHouse({
   address,
   description,
   lat,
-  lng
+  lng,
+  images = []
 }) {
   const { data, error } = await supabase
     .from("boarding_houses")
@@ -340,7 +419,8 @@ export async function createHouse({
 
       // Use null if latitude or longitude was not provided.
       latitude: lat ?? null,
-      longitude: lng ?? null
+      longitude: lng ?? null,
+      image_urls: images
     })
 
     // Return only the newly created house ID.
@@ -391,7 +471,8 @@ export async function createRoom(houseId, {
   monthlyRate,
   securityDeposit,
   capacity,
-  amenities
+  amenities,
+  images = []
 }) {
   const { error } = await supabase
     .from("rooms")
@@ -401,7 +482,8 @@ export async function createRoom(houseId, {
       monthly_rate: monthlyRate,
       security_deposit: securityDeposit ?? 0,
       capacity: capacity ?? 1,
-      amenities: amenities ?? []
+      amenities: amenities ?? [],
+      image_urls: images
     });
 
   fail(error);
@@ -445,7 +527,9 @@ export async function submitVerification(docs = {}) {
       business_permit_url: docs.businessPermitUrl ?? null,
       isp_bill_url: docs.ispBillUrl ?? null,
       water_proof_url: docs.waterProofUrl ?? null,
-      safety_audit_url: docs.safetyAuditUrl ?? null
+      safety_audit_url: docs.safetyAuditUrl ?? null,
+      government_id_url: docs.governmentIdPath ?? null,
+      proof_of_ownership_url: docs.ownershipProofPath ?? null
     })
     .select("verification_id")
     .single();
@@ -454,6 +538,18 @@ export async function submitVerification(docs = {}) {
 
   // Return the ID of the submitted verification record.
   return data.verification_id;
+}
+
+export async function fetchLatestLandlordVerification() {
+  const { data, error } = await supabase
+    .from("property_verifications")
+    .select("*")
+    .order("verification_id", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  fail(error);
+  return data || null;
 }
 
 /* ───────────────────────── Student actions ───────────────────────── */
@@ -562,6 +658,21 @@ export async function createBooking({
   return data.booking_id;
 }
 
+export async function fetchPublicRoomBookings(houseId) {
+  const { data, error } = await supabase.rpc("get_public_room_bookings", {
+    p_house_id: Number(houseId),
+  });
+
+  fail(error);
+
+  return (data || []).map((booking) => ({
+    roomId: String(booking.room_id),
+    startDate: booking.start_date,
+    endDate: booking.end_date,
+    status: booking.status,
+  }));
+}
+
 /*
   FETCH BOOKINGS
 
@@ -609,6 +720,7 @@ export async function fetchBookings() {
     monthlyRate: Number(b.rooms?.monthly_rate || 0),
     startDate: b.start_date,
     endDate: b.end_date,
+    actualEndDate: b.actual_end_date || null,
     status: b.status,
 
     // Keep only the date portion of the creation timestamp.
@@ -631,6 +743,20 @@ export async function setBookingStatus(bookingId, status) {
     .eq("booking_id", Number(bookingId));
 
   fail(error);
+}
+
+export async function completeBooking(bookingId, actualEndDate) {
+  const { data, error } = await supabase
+    .from("bookings")
+    .update({ status: "Completed", actual_end_date: actualEndDate })
+    .eq("booking_id", Number(bookingId))
+    .eq("status", "Confirmed")
+    .select("booking_id")
+    .maybeSingle();
+
+  fail(error);
+  if (!data) throw new Error("This booking is no longer confirmed. Refresh the bookings list and try again.");
+  return data.booking_id;
 }
 
 /*
@@ -879,10 +1005,11 @@ export async function markRead(messageIds) {
 export async function fetchAccountNames(accountIds) {
   if (!accountIds.length) return {};
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("message_peers")
-    .select("account_id, full_name, role")
+    .select("account_id, full_name, role, profile_photo_url")
     .in("account_id", accountIds);
+  fail(error);
 
   // Create an object that stores account details using account IDs as keys.
   const names = {};
@@ -890,6 +1017,7 @@ export async function fetchAccountNames(accountIds) {
   (data || []).forEach((r) => (
     names[r.account_id] = {
       name: r.full_name,
+      profilePhotoUrl: r.profile_photo_url,
 
       // Convert the database role into the frontend role format.
       role: r.role === "Landlord" ? "landlord" : "student"
@@ -912,12 +1040,25 @@ export async function fetchAccountNames(accountIds) {
 export async function fetchPendingVerifications() {
   const { data, error } = await supabase
     .from("property_verifications")
-    .select("*, landlords ( full_name )")
+    .select("*, landlords ( full_name, government_id, proof_of_ownership_url )")
     .eq("verification_status", "Pending");
 
   fail(error);
 
-  return data || [];
+  return Promise.all((data || []).map(async (verification) => ({
+    ...verification,
+    government_id_url: await signedVerificationDocument(verification.government_id_url),
+    proof_of_ownership_url: await signedVerificationDocument(verification.proof_of_ownership_url),
+    business_permit_url: await signedVerificationDocument(verification.business_permit_url),
+    isp_bill_url: await signedVerificationDocument(verification.isp_bill_url),
+    water_proof_url: await signedVerificationDocument(verification.water_proof_url),
+    safety_audit_url: await signedVerificationDocument(verification.safety_audit_url),
+    landlords: verification.landlords ? {
+      ...verification.landlords,
+      government_id: await signedVerificationDocument(verification.landlords.government_id),
+      proof_of_ownership_url: await signedVerificationDocument(verification.landlords.proof_of_ownership_url)
+    } : verification.landlords
+  })));
 }
 
 /*

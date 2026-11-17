@@ -11,13 +11,17 @@ import {
   setReviewHidden,
   recordInspection,
   updateHouse,
+  updateAccountProfile,
 } from "../lib/api.js";
+import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
+import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
 const SETTING_KEYS = { police: "weight_police", lighting: "weight_lighting", gated: "weight_gated", cctv: "weight_cctv" };
-export default function AdminConsole({ displayName, session }) {
+export default function AdminConsole({ displayName, session, onProfilePhotoChange }) {
   const { properties: PROPERTIES, reload } = useData();
   const [verifications, setVerifications] = useState([]);
   const [AUDIT_LOG, setAuditRows] = useState([]);
-  const [inspect, setInspect] = useState({ houseId: "", police: "", lighting: 3, gated: false, active: "", required: "" });
+  const [inspect, setInspect] = useState({ houseId: "", police: "", lighting: "", gated: false, active: "", required: "" });
+  const [weightsLoaded, setWeightsLoaded] = useState(false);
   const adminId = session?.accountId;
   const refreshAdmin = useCallback(async () => {
     try {
@@ -31,6 +35,8 @@ export default function AdminConsole({ displayName, session }) {
         if (row) w[k] = Math.round(Number(row.setting_value) * 100);
       });
       setWeights((prev) => ({ ...prev, ...w }));
+      setSavedWeights((prev) => ({ ...prev, ...w }));
+      setWeightsLoaded(true);
     } catch (e) {
       showToast("Load failed", e.message);
     }
@@ -58,6 +64,7 @@ export default function AdminConsole({ displayName, session }) {
   }));
   const [activeTab, setActiveTab] = useState("landlords");
   const [weights, setWeights] = useState({ police: 25, lighting: 25, gated: 25, cctv: 25 });
+  const [savedWeights, setSavedWeights] = useState({ police: 25, lighting: 25, gated: 25, cctv: 25 });
   const [modalItem, setModalItem] = useState(null);
   const [reason, setReason] = useState("");
   const [listingStatuses, setListingStatuses] = useState({});
@@ -65,6 +72,16 @@ export default function AdminConsole({ displayName, session }) {
   const [suspensionReason, setSuspensionReason] = useState("");
   const [reviews, setReviews] = useState([]);
   const [reviewToRemove, setReviewToRemove] = useState(null);
+  const [verificationDetail, setVerificationDetail] = useState(null);
+  const [listingDetail, setListingDetail] = useState(null);
+  const [reviewDetail, setReviewDetail] = useState(null);
+  const [verificationSearch, setVerificationSearch] = useState("");
+  const [queueSearch, setQueueSearch] = useState("");
+  const [listingSearch, setListingSearch] = useState("");
+  const [listingStatusFilter, setListingStatusFilter] = useState("all");
+  const [reviewSearch, setReviewSearch] = useState("");
+  const [reviewStatusFilter, setReviewStatusFilter] = useState("all");
+  const [badgeSearch, setBadgeSearch] = useState("");
   const [toast, setToast] = useState(null);
   // Audit log state
   const [auditSearch, setAuditSearch] = useState("");
@@ -75,6 +92,46 @@ export default function AdminConsole({ displayName, session }) {
   const allListings = PROPERTIES;
   const activeAdminName = displayName || "Admin";
   const auditLog = AUDIT_LOG;
+  const filteredListings = allListings.filter((listing) => {
+    const query = listingSearch.trim().toLowerCase();
+    const status = listingStatuses[listing.id] || listing.status;
+    const matchesSearch = !query ||
+      listing.title.toLowerCase().includes(query) ||
+      listing.landlordName.toLowerCase().includes(query) ||
+      listing.address.toLowerCase().includes(query);
+    return matchesSearch && (listingStatusFilter === "all" || status === listingStatusFilter);
+  });
+  const filteredReviews = reviews.filter((review) => {
+    const query = reviewSearch.trim().toLowerCase();
+    const status = review.status === "hidden" ? "hidden" : "visible";
+    const matchesSearch = !query ||
+      String(review.studentName || "").toLowerCase().includes(query) ||
+      String(review.propertyTitle || "").toLowerCase().includes(query) ||
+      String(review.comment || "").toLowerCase().includes(query);
+    return matchesSearch && (reviewStatusFilter === "all" || status === reviewStatusFilter);
+  });
+  const filteredVerifications = verifications.filter((verification) => {
+    const query = verificationSearch.trim().toLowerCase();
+    return !query || String(verification.landlords?.full_name || "").toLowerCase().includes(query);
+  });
+  const filteredPendingListings = ADMIN_PENDING.filter((item) => {
+    const query = queueSearch.trim().toLowerCase();
+    const listing = allListings.find((candidate) => candidate.id === item.rawId);
+    return !query || item.title.toLowerCase().includes(query) ||
+      item.landlord.toLowerCase().includes(query) ||
+      String(listing?.address || "").toLowerCase().includes(query);
+  });
+  const badgeRows = allListings.flatMap((listing) =>
+    [
+      ["badge_fast_wifi", "WiFi Verified"],
+      ["badge_24_7_water", "Water 24/7"],
+      ["badge_vetted_safe", "Vetted Safe"],
+    ].map(([column, label]) => ({ listing, column, label, verified: listing.badges.includes(label) })),
+  ).filter(({ listing, label }) => {
+    const query = badgeSearch.trim().toLowerCase();
+    return !query || listing.title.toLowerCase().includes(query) ||
+      listing.landlordName.toLowerCase().includes(query) || label.toLowerCase().includes(query);
+  });
   const filteredAuditLog = useMemo(() => {
     return auditLog.filter((e) => {
       const matchSearch =
@@ -91,6 +148,10 @@ export default function AdminConsole({ displayName, session }) {
   function showToast(title, message) {
     setToast({ title, message });
     window.setTimeout(() => setToast(null), 4000);
+  }
+  function openAdminAction(item) {
+    setReason("");
+    setModalItem(item);
   }
   function suspendListing() {
     if (!listingToSuspend || !suspensionReason.trim()) return;
@@ -122,19 +183,31 @@ export default function AdminConsole({ displayName, session }) {
     setReviewToRemove(null);
   }
   // Weighted 0-10 safety score from the latest inspection inputs and the saved weights
-  function computeScore({ police, lighting, gated, active, required }) {
+  function computeScore({ police, lighting, gated, active, required }, scoreWeights = weights) {
+    const distance = Math.min(Math.max(Number(police) || 0, 0), 2000);
+    const cctvRequired = Number(required) || 0;
     const parts = {
-      police: 10 * (1 - Math.min(Number(police) || 0, 2000) / 2000),
+      police: 2 + 8 * (1 - distance / 2000),
       lighting: Number(lighting) * 2,
-      gated: gated ? 10 : 0,
-      cctv: Number(required) ? Math.min(10, (Number(active) / Number(required)) * 10) : 0,
+      gated: gated ? 10 : 4,
+      cctv: cctvRequired ? Math.min(10, (Number(active) / cctvRequired) * 10) : 5,
     };
-    const total = Object.values(weights).reduce((a, b) => a + b, 0) || 1;
-    const score = Object.keys(parts).reduce((sum, k) => sum + parts[k] * (weights[k] / total), 0);
+    const total = Object.values(scoreWeights).reduce((a, b) => a + b, 0) || 1;
+    const score = Object.keys(parts).reduce((sum, k) => sum + parts[k] * (scoreWeights[k] / total), 0);
     return Math.round(score * 10) / 10;
   }
   async function submitInspection() {
     if (!inspect.houseId) return showToast("Pick a property", "Select the property being inspected.");
+    if (weightTotal !== 100) return showToast("Weights must total 100%", `Current weights total ${weightTotal}%.`);
+    if ([inspect.police, inspect.lighting, inspect.active, inspect.required].some((value) => value === "")) {
+      return showToast("Complete the inspection", "Enter police distance, lighting rating, and both CCTV counts.");
+    }
+    if (!Number.isFinite(Number(inspect.police)) || Number(inspect.police) < 0 ||
+        !Number.isFinite(Number(inspect.lighting)) ||
+        !Number.isInteger(Number(inspect.active)) || !Number.isInteger(Number(inspect.required)) ||
+        Number(inspect.active) < 0 || Number(inspect.required) < 0 || Number(inspect.lighting) < 1 || Number(inspect.lighting) > 5) {
+      return showToast("Check inspection values", "Distances and camera counts must be non-negative; lighting must be 1–5.");
+    }
     run(
       async () => {
         await recordInspection({
@@ -158,18 +231,58 @@ export default function AdminConsole({ displayName, session }) {
     run(
       async () => {
         for (const [k, key] of Object.entries(SETTING_KEYS)) await updateSetting(key, weights[k] / 100, adminId);
+        setSavedWeights(weights);
       },
       "Weights saved",
       "New weights apply to future inspections (SuperAdmin only).",
     );
   }
+  function recalculateInspectionScore(property) {
+    const inspection = property.safetyBreakdown;
+    if (!inspection.inspectedAt) return;
+    if ([inspection.policeDistanceMeters, inspection.lightingRating, inspection.cctvActive, inspection.cctvRequired]
+      .some((value) => value == null || !Number.isFinite(Number(value)))) {
+      return showToast("Inspection data incomplete", "Record all inspection measurements before recalculating this score.");
+    }
+    const score = computeScore({
+      police: inspection.policeDistanceMeters,
+      lighting: inspection.lightingRating,
+      gated: inspection.hasGatedAccess,
+      active: inspection.cctvActive,
+      required: inspection.cctvRequired,
+    }, savedWeights);
+    run(
+      () => updateHouse(Number(property.id), { safety_score: score }),
+      "Score recalculated",
+      `${property.title} now scores ${score}/10 using its latest inspection and saved weights.`,
+    );
+  }
+  const weightTotal = Object.values(weights).reduce((a, b) => a + b, 0);
+  const inspectionReady = Boolean(inspect.houseId) &&
+    [inspect.police, inspect.lighting, inspect.active, inspect.required].every((value) => value !== "") &&
+    Number.isFinite(Number(inspect.police)) &&
+    Number(inspect.police) >= 0 &&
+    Number.isInteger(Number(inspect.active)) &&
+    Number.isInteger(Number(inspect.required)) &&
+    Number(inspect.active) >= 0 &&
+    Number(inspect.required) >= 0 &&
+    Number.isFinite(Number(inspect.lighting)) &&
+    Number(inspect.lighting) >= 1 &&
+    Number(inspect.lighting) <= 5 &&
+    weightTotal === 100;
+  const inspectionPreview = inspectionReady ? computeScore(inspect) : null;
   return (
     <div className="admin-console max-w-6xl mx-auto px-4 sm:px-6 py-8">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
-        <div className="w-10 h-10 rounded-xl bg-[var(--primary)] text-white flex items-center justify-center font-bold">
-          {activeAdminName.charAt(0).toUpperCase()}
-        </div>
+        <ProfilePhotoUpload
+          name={activeAdminName}
+          photoUrl={session?.profile_photo_url}
+          onUploaded={async (url) => {
+            await updateAccountProfile(session.accountId, { profile_photo_url: url });
+            onProfilePhotoChange?.(url);
+          }}
+        />
         <div>
           <h1 className="font-display text-2xl font-semibold">Admin Console</h1>
           <p className="text-[var(--muted-foreground)] text-sm flex items-center gap-1.5">
@@ -207,109 +320,144 @@ export default function AdminConsole({ displayName, session }) {
       {/* Landlord Approval */}
       {activeTab === "landlords" && (
         <div className="space-y-4">
-          <h2 className="font-display text-xl font-semibold mb-8">Pending Account Approval</h2>
-          {verifications.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">No pending landlord verifications.</p>}
-          {verifications.map((v) => ({ id: String(v.verification_id), name: v.landlords?.full_name || "Landlord", date: (v.verified_at || "").slice(0, 10), docs: [v.business_permit_url, v.isp_bill_url, v.water_proof_url, v.safety_audit_url].filter(Boolean).length })).map((landlord) => (
-            <div key={landlord.id} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-                <div>
-                  <div className="flex items-center gap-2 mb-2">
-                    <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider bg-purple-100 text-purple-700">
-                      Verification
-                    </span>
-                    <span className="text-xs text-[var(--muted-foreground)]">{landlord.date}</span>
-                  </div>
-                  <h3 className="font-display font-semibold text-sm">Landlord Verification: {landlord.name}</h3>
-                  <p className="text-xs text-[var(--muted-foreground)] mt-1">by {landlord.name}</p>
-                  <p className="text-xs text-[var(--primary)] mt-2">{landlord.docs} document{landlord.docs !== 1 ? "s" : ""} attached</p>
-                </div>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => run(() => setVerificationStatus({ adminId, verificationId: landlord.id, status: "Approved", reason: "Documents verified" }), "Verification approved", `${landlord.name} was approved.`)}
-                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => setModalItem({ id: landlord.id, kind: "verification", title: `Landlord Verification: ${landlord.name}`, action: "reject" })}
-                    className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-semibold hover:bg-red-100 transition-colors"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
+          <div>
+            <h2 className="font-display text-xl font-semibold">Pending Landlord Verification</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Open a record to review its submitted documents before deciding.</p>
+          </div>
+          <input
+            type="search"
+            value={verificationSearch}
+            onChange={(event) => setVerificationSearch(event.target.value)}
+            placeholder="Search landlord name"
+            aria-label="Search pending landlord verifications"
+            className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm sm:max-w-sm"
+          />
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[42rem] text-sm">
+              <thead className="bg-[var(--muted)]">
+                <tr>{["Landlord", "Submitted", "Documents", "Status", "Review"].map((heading) => (
+                  <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">{heading}</th>
+                ))}</tr>
+              </thead>
+              <PaginatedTableBody
+                rows={filteredVerifications}
+                columns={5}
+                resetKey={verificationSearch}
+                emptyMessage={verifications.length ? "No verifications match your search." : "No pending landlord verifications."}
+                renderRow={(verification) => {
+                  const documentCount = [
+                    verification.government_id_url,
+                    verification.proof_of_ownership_url,
+                    verification.business_permit_url,
+                    verification.isp_bill_url,
+                    verification.water_proof_url,
+                    verification.safety_audit_url,
+                  ].filter(Boolean).length;
+                  return (
+                    <tr key={verification.verification_id} className="hover:bg-[var(--muted)]">
+                      <td className="px-4 py-3 font-medium">{verification.landlords?.full_name || "Landlord"}</td>
+                      <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{(verification.created_at || verification.verified_at || "").slice(0, 10) || "—"}</td>
+                      <td className="px-4 py-3">{documentCount}/4 attached</td>
+                      <td className="px-4 py-3"><span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase text-amber-800">Pending</span></td>
+                      <td className="px-4 py-3">
+                        <button
+                          type="button"
+                          onClick={() => setVerificationDetail(verification)}
+                          className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)] hover:opacity-80"
+                        >
+                          Review documents
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                }}
+              />
+            </table>
+          </div>
         </div>
       )}
 
       {/* Approval Queue */}
       {activeTab === "queue" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-display text-xl font-semibold">Pending Approvals</h2>
+          <div>
+            <h2 className="font-display text-xl font-semibold">Pending Listing Approvals</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">View the full listing before approving or rejecting it.</p>
           </div>
-          {ADMIN_PENDING.map((item) => (
-            <div key={item.id} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase tracking-wider ${
-                        item.type === "listing"
-                          ? "bg-blue-100 text-blue-700"
-                          : item.type === "verification"
-                            ? "bg-purple-100 text-purple-700"
-                            : "bg-amber-100 text-amber-700"
-                      }`}
-                    >
-                      {item.type}
-                    </span>
-                    <span className="text-xs text-[var(--muted-foreground)]">{item.submittedAt}</span>
-                  </div>
-                  <h3 className="font-semibold text-sm mb-0.5">{item.title}</h3>
-                  {item.landlord !== "—" && <p className="text-xs text-[var(--muted-foreground)]">by {item.landlord}</p>}
-                  {item.docs > 0 && (
-                    <p className="text-xs text-[var(--primary)] mt-1">
-                      📎 {item.docs} document{item.docs !== 1 ? "s" : ""} attached
-                    </p>
-                  )}
-                </div>
-                <div className="flex gap-2 flex-shrink-0">
-                  <button
-                    onClick={() => setModalItem({ id: item.rawId, kind: "house", title: item.title, action: "approve" })}
-                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs font-semibold hover:bg-emerald-700 transition-colors"
-                  >
-                    Approve
-                  </button>
-                  <button
-                    onClick={() => setModalItem({ id: item.rawId, kind: "house", title: item.title, action: "reject" })}
-                    className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-semibold hover:bg-red-100 transition-colors"
-                  >
-                    Reject
-                  </button>
-                </div>
-              </div>
-            </div>
-          ))}
-          {ADMIN_PENDING.length === 0 && (
-            <div className="text-center py-12 text-[var(--muted-foreground)]">
-              <div className="text-3xl mb-3">✅</div>
-              <p className="text-sm font-medium">All caught up!</p>
-            </div>
-          )}
+          <input
+            type="search"
+            value={queueSearch}
+            onChange={(event) => setQueueSearch(event.target.value)}
+            placeholder="Search listing, landlord, address"
+            aria-label="Search pending listing approvals"
+            className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm sm:max-w-sm"
+          />
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[38rem] text-sm">
+              <thead className="bg-[var(--muted)]">
+                <tr>{["Listing", "Landlord", "Submitted", "Status", "Review"].map((heading) => (
+                  <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">{heading}</th>
+                ))}</tr>
+              </thead>
+              <PaginatedTableBody
+                rows={filteredPendingListings}
+                columns={5}
+                resetKey={queueSearch}
+                emptyMessage={ADMIN_PENDING.length ? "No pending listings match your search." : "All caught up."}
+                renderRow={(item) => (
+                  <tr key={item.id} className="hover:bg-[var(--muted)]">
+                    <td className="px-4 py-3 font-medium">{item.title}</td>
+                    <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{item.landlord}</td>
+                    <td className="px-4 py-3 text-xs">{item.submittedAt || "—"}</td>
+                    <td className="px-4 py-3"><span className="rounded-full bg-amber-100 px-2 py-1 text-[10px] font-semibold uppercase text-amber-800">Pending</span></td>
+                    <td className="px-4 py-3">
+                      <button
+                        type="button"
+                        onClick={() => setListingDetail(allListings.find((listing) => listing.id === item.rawId) || null)}
+                        className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)] hover:opacity-80"
+                      >
+                        Review details
+                      </button>
+                    </td>
+                  </tr>
+                )}
+              />
+            </table>
+          </div>
         </div>
       )}
 
       {/* All Listings */}
       {activeTab === "listings" && (
-        <div>
-          <h2 className="font-display text-xl font-semibold mb-4">All Listings</h2>
-          <div className="bg-[var(--card)] rounded-2xl border border-[var(--border)] overflow-hidden">
-            <table className="w-full text-sm">
+        <div className="space-y-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="font-display text-xl font-semibold">All Listings</h2>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Select a row to inspect the full listing and its safety details.</p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <input
+                type="search"
+                value={listingSearch}
+                onChange={(event) => setListingSearch(event.target.value)}
+                placeholder="Search listing, landlord, address"
+                aria-label="Search listings"
+                className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm"
+              />
+              <select value={listingStatusFilter} onChange={(event) => setListingStatusFilter(event.target.value)} aria-label="Filter listings by status" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+                <option value="all">All statuses</option>
+                <option value="pending">Pending</option>
+                <option value="approved">Published</option>
+                <option value="suspended">Suspended</option>
+                <option value="rejected">Rejected</option>
+              </select>
+            </div>
+          </div>
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[52rem] text-sm">
               <thead className="bg-[var(--muted)]">
                 <tr>
-                  {["Property", "Landlord", "Rent", "Safety", "Status", "Actions"].map((h) => (
+                  {["Listing", "Landlord", "Rooms", "From / month", "Safety", "Status", "Details"].map((h) => (
                     <th
                       key={h}
                       className="text-left px-4 py-3 text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider"
@@ -319,48 +467,46 @@ export default function AdminConsole({ displayName, session }) {
                   ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--border)]">
-                {allListings.map((p) => (
-                  <tr key={p.id} className="hover:bg-[var(--muted)] transition-colors">
+              <PaginatedTableBody
+                rows={filteredListings}
+                columns={7}
+                resetKey={`${listingSearch}|${listingStatusFilter}`}
+                emptyMessage="No listings match your search or status filter."
+                renderRow={(p) => (
+                  <tr key={p.id} className="cursor-pointer hover:bg-[var(--muted)] transition-colors" onClick={() => setListingDetail(p)}>
                     <td className="px-4 py-3">
                       <div className="font-medium text-xs leading-snug max-w-48">{p.title}</div>
                     </td>
                     <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{p.landlordName}</td>
+                    <td className="px-4 py-3 text-xs">{p.rooms.length}</td>
                     <td className="px-4 py-3 text-xs font-mono">₱{p.monthlyRent.toLocaleString()}</td>
-                    <td className="px-4 py-3 text-xs font-semibold">⚡ {p.safetyScore}</td>
+                    <td className="px-4 py-3 text-xs font-semibold">{Number(p.safetyScore).toFixed(1)}/10</td>
                     <td className="px-4 py-3">
+                      {(() => {
+                        const status = listingStatuses[p.id] || p.status;
+                        return (
                       <span
                         className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${
-                          listingStatuses[p.id] === "suspended"
+                          status === "suspended"
                             ? "bg-red-100 text-red-700"
-                            : p.status === "approved"
+                            : status === "approved"
                               ? "bg-emerald-100 text-emerald-700"
-                              : p.status === "pending"
+                              : status === "pending"
                                 ? "bg-amber-100 text-amber-700"
                                 : "bg-red-100 text-red-700"
                         }`}
                       >
-                        {listingStatuses[p.id] === "suspended" ? "suspended" : p.status}
+                        {status}
                       </span>
+                        );
+                      })()}
                     </td>
                     <td className="px-4 py-3">
-                      <div className="flex gap-1">
-                        <button className="px-2 py-1 bg-[var(--secondary)] text-[var(--primary)] rounded text-[10px] font-medium hover:opacity-80">
-                          Review
-                        </button>
-                        {p.status === "approved" && listingStatuses[p.id] !== "suspended" && (
-                          <button
-                            onClick={() => setListingToSuspend(p)}
-                            className="px-2 py-1 bg-red-50 text-red-700 rounded text-[10px] font-medium hover:opacity-80"
-                          >
-                            Suspend
-                          </button>
-                        )}
-                      </div>
+                      <button type="button" onClick={(event) => { event.stopPropagation(); setListingDetail(p); }} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Review</button>
                     </td>
                   </tr>
-                ))}
-              </tbody>
+                )}
+              />
             </table>
           </div>
         </div>
@@ -368,148 +514,197 @@ export default function AdminConsole({ displayName, session }) {
 
       {/* Safety Weights */}
       {activeTab === "safety" && (
-        <div className="max-w-lg space-y-6">
-          <div>
-            <h2 className="font-display text-xl font-semibold mb-2">Safety Score Weights</h2>
-            <p className="text-sm text-[var(--muted-foreground)] mb-6">
-              Adjust the weight of each factor in the overall safety score calculation. Weights must sum to 100%.
-            </p>
-          </div>
-          {[
-            { key: "police", label: "Police Post Proximity", desc: "Distance to nearest police station or post" },
-            { key: "lighting", label: "Street Lighting", desc: "Adequacy of street lights on walking routes" },
-            { key: "gated", label: "Gated Access", desc: "Presence of locked gates / security guard" },
-            { key: "cctv", label: "CCTV Coverage", desc: "Number and coverage of security cameras" },
-          ].map((factor) => (
-            <div key={factor.key} className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4">
-              <div className="flex justify-between items-start mb-3">
-                <div>
-                  <div className="font-semibold text-sm">{factor.label}</div>
-                  <div className="text-xs text-[var(--muted-foreground)]">{factor.desc}</div>
+        <div className="space-y-8">
+          <section className="space-y-4">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Safety Score Weights</h2>
+              <p className="mt-1 max-w-3xl text-sm text-[var(--muted-foreground)]">
+                Each percentage is that factor’s share of the final score out of 10. For example, a 25% weight means a factor rated 8/10 contributes 2 points. All four weights must total exactly 100%.
+              </p>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {[
+                { key: "police", label: "Distance to police assistance", desc: "Closer is scored higher; 0–2,000m maps linearly from 10 to 0." },
+                { key: "lighting", label: "Street lighting", desc: "Inspector rating from 1 (poorly lit) to 5 (well lit), converted to 2–10." },
+                { key: "gated", label: "Gated access", desc: "Secure gated access scores 10; no secure gate scores 0." },
+                { key: "cctv", label: "CCTV coverage", desc: "Active cameras ÷ required cameras, capped at 10/10." },
+              ].map((factor) => (
+                <div key={factor.key} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-semibold">{factor.label}</div>
+                      <div className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">{factor.desc}</div>
+                    </div>
+                    <span className="font-mono text-lg font-bold text-[var(--primary)]">{weights[factor.key]}%</span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    value={weights[factor.key]}
+                    aria-label={`${factor.label} weight`}
+                    onChange={(e) => setWeights((prev) => ({ ...prev, [factor.key]: Number(e.target.value) }))}
+                    className="w-full accent-[var(--primary)]"
+                  />
                 </div>
-                <span className="font-mono text-lg font-bold text-[var(--primary)]">{weights[factor.key]}%</span>
-              </div>
-              <input
-                type="range"
-                min={0}
-                max={100}
-                step={5}
-                value={weights[factor.key]}
-                onChange={(e) => setWeights((prev) => ({ ...prev, [factor.key]: Number(e.target.value) }))}
-                className="w-full accent-[var(--primary)]"
-              />
-            </div>
-          ))}
-          <div
-            className={`flex justify-between items-center p-3 rounded-xl border ${
-              Object.values(weights).reduce((a, b) => a + b, 0) === 100
-                ? "bg-emerald-50 border-emerald-200 text-emerald-700"
-                : "bg-red-50 border-red-200 text-red-700"
-            }`}
-          >
-            <span className="text-sm font-medium">Total</span>
-            <span className="font-mono font-bold">{Object.values(weights).reduce((a, b) => a + b, 0)}% / 100%</span>
-          </div>
-          <button onClick={saveWeights} className="w-full py-3 bg-[var(--primary)] text-white rounded-xl font-semibold text-sm hover:opacity-90 transition-opacity">
-            Save Weights
-          </button>
-
-          <div className="bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 space-y-3">
-            <h3 className="font-semibold text-sm">Record Inspection</h3>
-            <select value={inspect.houseId} onChange={(e) => setInspect({ ...inspect, houseId: e.target.value })} className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm">
-              <option value="">Select property…</option>
-              {PROPERTIES.map((p) => (
-                <option key={p.id} value={p.id}>{p.title}</option>
               ))}
-            </select>
-            <div className="grid grid-cols-2 gap-2 text-sm">
-              <input type="number" placeholder="Police distance (m)" value={inspect.police} onChange={(e) => setInspect({ ...inspect, police: e.target.value })} className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)]" />
-              <select value={inspect.lighting} onChange={(e) => setInspect({ ...inspect, lighting: e.target.value })} className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)]">
-                {[1, 2, 3, 4, 5].map((n) => (
-                  <option key={n} value={n}>Lighting {n}/5</option>
-                ))}
-              </select>
-              <input type="number" placeholder="CCTV active" value={inspect.active} onChange={(e) => setInspect({ ...inspect, active: e.target.value })} className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)]" />
-              <input type="number" placeholder="CCTV required" value={inspect.required} onChange={(e) => setInspect({ ...inspect, required: e.target.value })} className="px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)]" />
             </div>
-            <label className="flex items-center gap-2 text-sm">
-              <input type="checkbox" checked={inspect.gated} onChange={(e) => setInspect({ ...inspect, gated: e.target.checked })} /> Gated access
+            <div className={`flex items-center justify-between rounded-xl border p-3 ${weightTotal === 100 ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-800"}`}>
+              <span className="text-sm font-medium">Weight total</span>
+              <span className="font-mono font-bold">{weightTotal}% / 100%</span>
+            </div>
+            <button
+              onClick={saveWeights}
+              disabled={weightTotal !== 100}
+              className="rounded-xl bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              Save Weights
+            </button>
+          </section>
+
+          <section className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div>
+              <h3 className="font-display text-lg font-semibold">Record a Safety Inspection</h3>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Enter measured values from the property visit. Scores use the current weights and a 0–10 scale with partial credit for non-gated properties and neutral credit when CCTV is not required.</p>
+            </div>
+            <div>
+              <label htmlFor="inspection-property" className="mb-1.5 block text-xs font-semibold">Property being inspected</label>
+              <select id="inspection-property" value={inspect.houseId} onChange={(e) => setInspect({ ...inspect, houseId: e.target.value })} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm">
+                <option value="">Select property…</option>
+                {PROPERTIES.map((p) => <option key={p.id} value={p.id}>{p.title} · {p.landlordName}</option>)}
+              </select>
+            </div>
+            <div className="grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="inspection-police-distance" className="mb-1.5 block text-xs font-semibold">Nearest police station/post (meters)</label>
+                <input id="inspection-police-distance" type="number" min="0" step="1" value={inspect.police} onChange={(e) => setInspect({ ...inspect, police: e.target.value })} placeholder="e.g. 450" className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
+                <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">Closer stations score higher; proximity scores range from 10/10 nearby to 2/10 at 2km or farther.</p>
+              </div>
+              <div>
+                <label htmlFor="inspection-lighting" className="mb-1.5 block text-xs font-semibold">Lighting on the route/property</label>
+                <select id="inspection-lighting" value={inspect.lighting} onChange={(e) => setInspect({ ...inspect, lighting: e.target.value })} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm">
+                  <option value="">Select rating…</option>
+                  {[1, 2, 3, 4, 5].map((n) => <option key={n} value={n}>{n}/5 — {n === 1 ? "Very poor" : n === 5 ? "Very well lit" : "Moderate"}</option>)}
+                </select>
+                <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">Rate visible lighting coverage from 1 (poor) to 5 (well lit).</p>
+              </div>
+              <div>
+                <label htmlFor="inspection-cctv-active" className="mb-1.5 block text-xs font-semibold">Active CCTV cameras</label>
+                <input id="inspection-cctv-active" type="number" min="0" step="1" value={inspect.active} onChange={(e) => setInspect({ ...inspect, active: e.target.value })} placeholder="Number working" className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
+              </div>
+              <div>
+                <label htmlFor="inspection-cctv-required" className="mb-1.5 block text-xs font-semibold">CCTV cameras required</label>
+                <input id="inspection-cctv-required" type="number" min="0" step="1" value={inspect.required} onChange={(e) => setInspect({ ...inspect, required: e.target.value })} placeholder="Number expected" className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
+                <p className="mt-1 text-[11px] text-[var(--muted-foreground)]">Enter 0 if cameras are not required; CCTV then receives a neutral 5/10 instead of lowering the score.</p>
+              </div>
+            </div>
+            <label className="flex items-start gap-3 rounded-xl border border-[var(--border)] bg-[var(--background)] p-3 text-sm">
+              <input type="checkbox" checked={inspect.gated} onChange={(e) => setInspect({ ...inspect, gated: e.target.checked })} className="mt-0.5" />
+              <span><span className="block font-semibold">Secure gated property</span><span className="text-xs text-[var(--muted-foreground)]">Mark this only if access is controlled by a secure gate; a property without one receives partial credit (4/10) rather than zero.</span></span>
             </label>
-            <button onClick={submitInspection} className="w-full py-2.5 bg-[var(--primary)] text-white rounded-xl font-semibold text-sm">Save inspection & score</button>
-          </div>
+            <div className="flex flex-col gap-3 rounded-xl border border-[var(--primary)]/20 bg-[var(--secondary)] p-4 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-[var(--primary)]">Weighted score preview</div>
+                <div className="mt-1 text-sm text-[var(--muted-foreground)]">{inspectionPreview == null ? "Complete all inspection fields and set weights to 100% to preview the score." : "Score uses the current weights, totaling 100%."}</div>
+              </div>
+              <div className="font-display text-3xl font-bold text-[var(--primary)]">{inspectionPreview == null ? "—" : `${inspectionPreview}/10`}</div>
+            </div>
+            <button onClick={submitInspection} disabled={!inspectionReady} className="rounded-xl bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">Save inspection & score</button>
+          </section>
+
+          <section className="space-y-3">
+            <div>
+              <h3 className="font-display text-lg font-semibold">Latest Inspection by Listing</h3>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Measured values and score components from each listing’s newest inspection.</p>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+              <table className="w-full min-w-[64rem] text-sm">
+                <thead className="bg-[var(--muted)]"><tr>{["Property", "Inspected", "Police distance", "Lighting", "Secure gate", "CCTV", "Score", "Update"].map((heading) => <th key={heading} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                <PaginatedTableBody
+                  rows={PROPERTIES}
+                  columns={8}
+                  resetKey={PROPERTIES.length}
+                  emptyMessage="No listings available to inspect."
+                  renderRow={(property) => {
+                    const inspection = property.safetyBreakdown;
+                    const hasCompleteInspection = Boolean(inspection.inspectedAt) &&
+                      [inspection.policeDistanceMeters, inspection.lightingRating, inspection.cctvActive, inspection.cctvRequired]
+                        .every((value) => value != null && Number.isFinite(Number(value)));
+                    return (
+                      <tr key={property.id}>
+                        <td className="px-3 py-3 font-medium">{property.title}</td>
+                        <td className="px-3 py-3 text-xs">{inspection.inspectedAt || "No inspection"}</td>
+                        <td className="px-3 py-3 text-xs">{inspection.policeDistanceMeters == null ? "—" : `${inspection.policeDistanceMeters.toLocaleString()} m`}</td>
+                        <td className="px-3 py-3 text-xs">{inspection.lightingRating == null ? "—" : `${inspection.lightingRating}/5`}</td>
+                        <td className="px-3 py-3 text-xs">{inspection.inspectedAt ? inspection.hasGatedAccess ? "Yes" : "No" : "—"}</td>
+                        <td className="px-3 py-3 text-xs">{inspection.cctvActive == null ? "—" : `${inspection.cctvActive} / ${inspection.cctvRequired}`}</td>
+                        <td className="px-3 py-3 font-semibold">{inspection.inspectedAt ? `${Number(property.safetyScore).toFixed(1)}/10` : "Not scored"}</td>
+                        <td className="px-3 py-3">
+                          <button
+                            type="button"
+                            onClick={() => recalculateInspectionScore(property)}
+                            disabled={!hasCompleteInspection || !weightsLoaded}
+                            className="whitespace-nowrap rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-40"
+                          >
+                            Recalculate score
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  }}
+                />
+              </table>
+            </div>
+          </section>
         </div>
       )}
 
       {/* Reviews */}
       {activeTab === "reviews" && (
         <div className="space-y-4">
-          <h2 className="font-display text-xl font-semibold mb-4">Review Moderation</h2>
-          {reviews.map((review) => (
-            <div key={review.id} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-1">
-                    <span
-                      className={`px-2 py-0.5 rounded-full text-[10px] font-semibold uppercase ${
-                        review.status === "removed"
-                          ? "bg-red-50 text-red-700"
-                          : review.status === "hidden"
-                            ? "bg-[var(--muted)] text-[var(--muted-foreground)]"
-                            : "bg-amber-100 text-amber-700"
-                      }`}
-                    >
-                      {review.status}
-                    </span>
-                    <span className="text-xs text-[var(--muted-foreground)]">{review.date}</span>
-                  </div>
-                  <h3 className="font-display font-semibold text-sm">{review.studentName}</h3>
-                  <p className="text-xs text-[var(--muted-foreground)] mt-0.5">on {review.propertyTitle}</p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-amber-500 text-sm">
-                      {"★".repeat(review.rating)}
-                      {"☆".repeat(5 - review.rating)}
-                    </span>
-                    <span className="text-xs text-[var(--muted-foreground)]">{review.rating.toFixed(1)}</span>
-                  </div>
-                  <p className="text-sm text-[var(--foreground)] mt-1">“{review.comment}”</p>
-                  <p className="text-xs text-amber-700 mt-2">
-                    
-                  </p>
-                  {review.status === "hidden" && <p className="text-xs text-red-700 mt-2">Hidden from the public property page.</p>}
-                </div>
-                <div className="flex gap-2 flex-shrink-0">
-                  {review.status === "hidden" && (
-                    <button
-                      onClick={() => updateReviewStatus(review.id, "flagged")}
-                      className="px-3 py-1.5 bg-[var(--secondary)] text-[var(--primary)] rounded-lg text-xs font-semibold hover:opacity-80 transition-opacity"
-                    >
-                      Restore
-                    </button>
-                  )}
-                  {review.status === "flagged" && (
-                    <button
-                      onClick={() => updateReviewStatus(review.id, "hidden")}
-                      className="px-3 py-1.5 bg-[var(--secondary)] text-[var(--primary)] rounded-lg text-xs font-semibold hover:opacity-80 transition-opacity"
-                    >
-                      Hide
-                    </button>
-                  )}
-                  {review.status !== "hidden" ? (
-                    <button
-                      onClick={() => setReviewToRemove(review)}
-                      className="px-3 py-1.5 bg-red-50 text-red-700 border border-red-200 rounded-lg text-xs font-semibold hover:bg-red-100 transition-colors"
-                    >
-                      Remove
-                    </button>
-                  ) : (
-                    <span className="px-3 py-1.5 bg-[var(--muted)] text-[var(--muted-foreground)] rounded-lg text-xs font-semibold">
-                      Hidden
-                    </span>
-                  )}
-                </div>
-              </div>
-            </div>
-          ))}
+          <div>
+            <h2 className="font-display text-xl font-semibold">Review Moderation</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Open a review to read it in full and access moderation actions. Remove hides it from public display; it does not delete the record.</p>
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input
+              type="search"
+              value={reviewSearch}
+              onChange={(event) => setReviewSearch(event.target.value)}
+              placeholder="Search reviewer, listing, review text"
+              aria-label="Search reviews"
+              className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm"
+            />
+            <select value={reviewStatusFilter} onChange={(event) => setReviewStatusFilter(event.target.value)} aria-label="Filter reviews by visibility" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+              <option value="all">All reviews</option>
+              <option value="visible">Visible</option>
+              <option value="hidden">Hidden</option>
+            </select>
+          </div>
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[42rem] text-sm">
+              <thead className="bg-[var(--muted)]">
+                <tr>{["Reviewer", "Listing", "Rating", "Date", "Visibility", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr>
+              </thead>
+              <PaginatedTableBody
+                rows={filteredReviews}
+                columns={6}
+                resetKey={`${reviewSearch}|${reviewStatusFilter}`}
+                emptyMessage={reviews.length ? "No reviews match your search or filter." : "No reviews to moderate."}
+                renderRow={(review) => (
+                  <tr key={review.id} className="hover:bg-[var(--muted)]">
+                    <td className="px-4 py-3 font-medium">{review.studentName}</td>
+                    <td className="px-4 py-3">{review.propertyTitle || "—"}</td>
+                    <td className="px-4 py-3 text-amber-600">{"★".repeat(Math.max(0, Math.min(5, review.rating)))} <span className="text-[var(--foreground)]">{Number(review.rating).toFixed(1)}/5</span></td>
+                    <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{review.date || "—"}</td>
+                    <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${review.status === "hidden" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>{review.status === "hidden" ? "Hidden" : "Visible"}</span></td>
+                    <td className="px-4 py-3"><button type="button" onClick={() => setReviewDetail(review)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Open review</button></td>
+                  </tr>
+                )}
+              />
+            </table>
+          </div>
         </div>
       )}
 
@@ -518,37 +713,33 @@ export default function AdminConsole({ displayName, session }) {
         <div className="space-y-4">
           <div>
             <h2 className="font-display text-xl font-semibold">Badge Verification</h2>
-            <p className="text-sm text-[var(--muted-foreground)] mt-1">
-              Review evidence submitted by landlords for listing verification badges.
-            </p>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage which verification badges are shown on listings. The current schema stores badge state only; it does not store supporting evidence or review history.</p>
           </div>
-          {PROPERTIES.length === 0 && <p className="text-sm text-[var(--muted-foreground)]">No properties yet.</p>}
-          {PROPERTIES.map((p) => (
-            <div key={p.id} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-              <div>
-                <div className="font-semibold text-sm">{p.title}</div>
-                <div className="text-xs text-[var(--muted-foreground)]">{p.landlordName}</div>
-              </div>
-              <div className="flex gap-2 flex-wrap">
-                {[
-                  ["badge_fast_wifi", "WiFi Verified"],
-                  ["badge_24_7_water", "Water 24/7"],
-                  ["badge_vetted_safe", "Vetted Safe"],
-                ].map(([col, label]) => {
-                  const on = p.badges.includes(label);
-                  return (
-                    <button
-                      key={col}
-                      onClick={() => run(() => updateHouse(Number(p.id), { [col]: !on }), "Badge updated", `${label} ${on ? "removed from" : "granted to"} ${p.title}.`)}
-                      className={`px-3 py-1.5 rounded-lg text-xs font-semibold border ${on ? "bg-emerald-600 text-white border-emerald-600" : "bg-[var(--muted)] border-[var(--border)]"}`}
-                    >
-                      {on ? "✓ " : ""}{label}
-                    </button>
-                  );
-                })}
-              </div>
-            </div>
-          ))}
+          <input type="search" value={badgeSearch} onChange={(event) => setBadgeSearch(event.target.value)} placeholder="Search listing, landlord, badge" aria-label="Search badge records" className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm sm:max-w-sm" />
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[42rem] text-sm">
+              <thead className="bg-[var(--muted)]"><tr>{["Listing", "Landlord", "Badge", "Status", "Action"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+              <PaginatedTableBody
+                rows={badgeRows}
+                columns={5}
+                resetKey={badgeSearch}
+                emptyMessage="No badge records match your search."
+                renderRow={({ listing, column, label, verified }) => (
+                  <tr key={`${listing.id}-${column}`} className="hover:bg-[var(--muted)]">
+                    <td className="px-4 py-3 font-medium">{listing.title}</td>
+                    <td className="px-4 py-3">{listing.landlordName}</td>
+                    <td className="px-4 py-3">{label}</td>
+                    <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${verified ? "bg-emerald-50 text-emerald-700" : "bg-[var(--muted)] text-[var(--muted-foreground)]"}`}>{verified ? "Enabled" : "Not enabled"}</span></td>
+                    <td className="px-4 py-3">
+                      <button type="button" onClick={() => run(() => updateHouse(Number(listing.id), { [column]: !verified }), "Badge updated", `${label} ${verified ? "removed from" : "granted to"} ${listing.title}.`)} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${verified ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
+                        {verified ? "Disable" : "Enable"}
+                      </button>
+                    </td>
+                  </tr>
+                )}
+              />
+            </table>
+          </div>
         </div>
       )}
 
@@ -894,6 +1085,151 @@ export default function AdminConsole({ displayName, session }) {
         </div>
       )}
 
+      {/* Listing detail and moderation */}
+      {listingDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="listing-detail-title">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
+              <div>
+                <h3 id="listing-detail-title" className="font-display text-lg font-semibold">{listingDetail.title}</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">{listingDetail.address} · Listed by {listingDetail.landlordName}</p>
+              </div>
+              <button type="button" onClick={() => setListingDetail(null)} aria-label="Close listing details" className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[var(--border)]">✕</button>
+            </div>
+            <div className="space-y-5 overflow-y-auto p-5">
+              {listingDetail.images?.[0] && <img src={listingDetail.images[0]} alt={listingDetail.title} className="h-52 w-full rounded-xl object-cover" />}
+              <section>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Listing overview</h4>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{listingDetail.description || "No description provided."}</p>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full bg-[var(--secondary)] px-3 py-1 font-semibold text-[var(--primary)]">Status: {listingStatuses[listingDetail.id] || listingDetail.status}</span>
+                  <span className="rounded-full bg-[var(--muted)] px-3 py-1">From ₱{Number(listingDetail.monthlyRent).toLocaleString()} / month</span>
+                  <span className="rounded-full bg-[var(--muted)] px-3 py-1">{listingDetail.rooms.length} rooms</span>
+                </div>
+              </section>
+              <section>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Rooms and rates</h4>
+                <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
+                  <table className="w-full min-w-[36rem] text-sm">
+                    <thead className="bg-[var(--muted)]"><tr>{["Room", "Monthly rent", "Deposit", "Capacity", "Status", "Amenities"].map((heading) => <th key={heading} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                    <PaginatedTableBody
+                      rows={listingDetail.rooms}
+                      columns={6}
+                      resetKey={listingDetail.id}
+                      emptyMessage="No room records on this listing."
+                      renderRow={(room) => (
+                        <tr key={room.id}>
+                          <td className="px-3 py-2 font-medium">{room.name || "Room"}</td>
+                          <td className="px-3 py-2">₱{Number(room.price || 0).toLocaleString()}</td>
+                          <td className="px-3 py-2">₱{Number(room.securityDeposit || 0).toLocaleString()}</td>
+                          <td className="px-3 py-2">{room.capacity ?? "—"}</td>
+                          <td className="px-3 py-2 capitalize">{room.status || "—"}</td>
+                          <td className="px-3 py-2 text-xs">{room.amenities?.join(", ") || "—"}</td>
+                        </tr>
+                      )}
+                    />
+                  </table>
+                </div>
+                {listingDetail.badges.length > 0 && <p className="mt-2 text-xs text-[var(--muted-foreground)]">Badges: {listingDetail.badges.join(", ")}</p>}
+              </section>
+              <section className="rounded-xl border border-[var(--border)] bg-[var(--muted)] p-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Latest safety inspection</h4>
+                {listingDetail.safetyBreakdown.inspectedAt ? (
+                  <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Inspection date</dt><dd className="font-medium">{listingDetail.safetyBreakdown.inspectedAt}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Current overall score</dt><dd className="font-medium">{Number(listingDetail.safetyScore).toFixed(1)}/10</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Nearest police station/post</dt><dd className="font-medium">{listingDetail.safetyBreakdown.policeDistanceMeters == null ? "Not recorded" : `${listingDetail.safetyBreakdown.policeDistanceMeters.toLocaleString()} meters`}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Lighting rating</dt><dd className="font-medium">{listingDetail.safetyBreakdown.lightingRating == null ? "Not recorded" : `${listingDetail.safetyBreakdown.lightingRating}/5`}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Secure gated access</dt><dd className="font-medium">{listingDetail.safetyBreakdown.hasGatedAccess ? "Yes" : "No"}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Active / required CCTV</dt><dd className="font-medium">{listingDetail.safetyBreakdown.cctvActive == null ? "Not recorded" : `${listingDetail.safetyBreakdown.cctvActive} / ${listingDetail.safetyBreakdown.cctvRequired}`}</dd></div>
+                  </dl>
+                ) : <p className="mt-2 text-sm text-[var(--muted-foreground)]">No safety inspection has been recorded for this listing.</p>}
+              </section>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <button type="button" onClick={() => setListingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+              {listingDetail.status === "pending" && (
+                <>
+                  <button type="button" onClick={() => { openAdminAction({ kind: "house", id: listingDetail.id, title: listingDetail.title, action: "reject" }); setListingDetail(null); }} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Reject</button>
+                  <button type="button" onClick={() => { openAdminAction({ kind: "house", id: listingDetail.id, title: listingDetail.title, action: "approve" }); setListingDetail(null); }} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white">Approve</button>
+                </>
+              )}
+              {listingDetail.status === "approved" && <button type="button" onClick={() => { setListingToSuspend(listingDetail); setListingDetail(null); }} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Suspend listing</button>}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Landlord verification detail */}
+      {verificationDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="verification-detail-title">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
+              <div>
+                <h3 id="verification-detail-title" className="font-display text-lg font-semibold">Landlord verification</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">{verificationDetail.landlords?.full_name || "Landlord"} · Submitted {(verificationDetail.created_at || "").slice(0, 10) || "date unavailable"}</p>
+              </div>
+              <button type="button" onClick={() => setVerificationDetail(null)} aria-label="Close verification details" className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[var(--border)]">✕</button>
+            </div>
+            <div className="space-y-4 p-5">
+              <p className="text-sm text-[var(--muted-foreground)]">Open each attached document and confirm it is valid before approving or rejecting this verification.</p>
+              {[
+                ["Government-issued ID", verificationDetail.government_id_url],
+                ["Property ownership proof", verificationDetail.proof_of_ownership_url],
+                ["Business permit", verificationDetail.business_permit_url],
+                ["Internet service proof", verificationDetail.isp_bill_url],
+                ["Water service proof", verificationDetail.water_proof_url],
+                ["Safety audit", verificationDetail.safety_audit_url],
+              ].map(([label, url]) => (
+                <div key={label} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--border)] p-3">
+                  <span className="text-sm font-medium">{label}</span>
+                  {url ? <a href={url} target="_blank" rel="noopener noreferrer" className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)] underline">Open document</a> : <span className="text-xs text-[var(--muted-foreground)]">Not attached</span>}
+                </div>
+              ))}
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <button type="button" onClick={() => setVerificationDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+              <button type="button" onClick={() => { openAdminAction({ kind: "verification", id: verificationDetail.verification_id, title: verificationDetail.landlords?.full_name || "Landlord verification", action: "reject" }); setVerificationDetail(null); }} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Reject</button>
+              <button type="button" onClick={() => { openAdminAction({ kind: "verification", id: verificationDetail.verification_id, title: verificationDetail.landlords?.full_name || "Landlord verification", action: "approve" }); setVerificationDetail(null); }} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white">Approve</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Review details and moderation */}
+      {reviewDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="review-detail-title">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
+              <div>
+                <h3 id="review-detail-title" className="font-display text-lg font-semibold">Review details</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">{reviewDetail.studentName} · {reviewDetail.propertyTitle} · {reviewDetail.date}</p>
+              </div>
+              <button type="button" onClick={() => setReviewDetail(null)} aria-label="Close review details" className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[var(--border)]">✕</button>
+            </div>
+            <div className="space-y-4 p-5">
+              <div className="flex items-center gap-2">
+                <span className="text-lg text-amber-500">{"★".repeat(Math.max(0, Math.min(5, reviewDetail.rating)))}{"☆".repeat(Math.max(0, 5 - Math.min(5, reviewDetail.rating)))}</span>
+                <span className="text-sm font-semibold">{Number(reviewDetail.rating).toFixed(1)} / 5</span>
+                <span className={`ml-auto rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${reviewDetail.status === "hidden" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>{reviewDetail.status === "hidden" ? "Hidden" : "Visible"}</span>
+              </div>
+              <blockquote className="whitespace-pre-wrap rounded-xl border border-[var(--border)] bg-[var(--muted)] p-4 text-sm leading-relaxed">{reviewDetail.comment || "No written comment was submitted."}</blockquote>
+              <p className="text-xs text-[var(--muted-foreground)]">Moderation actions are recorded in the audit log. Removing a review hides it from public display; it is not deleted.</p>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <button type="button" onClick={() => setReviewDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+              {reviewDetail.status === "hidden"
+                ? <button type="button" onClick={() => { updateReviewStatus(reviewDetail.id, "flagged"); setReviewDetail(null); }} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white">Restore review</button>
+                : <>
+                    <button type="button" onClick={() => { updateReviewStatus(reviewDetail.id, "hidden"); setReviewDetail(null); }} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Hide review</button>
+                    <button type="button" onClick={() => { setReviewToRemove(reviewDetail); setReviewDetail(null); }} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Remove review</button>
+                  </>
+              }
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Suspend listing modal */}
       {listingToSuspend && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-4" role="presentation">
@@ -953,8 +1289,7 @@ export default function AdminConsole({ displayName, session }) {
               Remove Review
             </h3>
             <p className="text-xs text-[var(--muted-foreground)] mt-1 mb-4">
-              Are you sure you want to remove this review? It will be hidden from the public property page and the property's aggregate
-              rating will be updated.
+              Are you sure you want to remove this review? This action hides it from the public property page; the record remains available to administrators.
             </p>
             <div className="flex gap-2">
               <button
@@ -981,11 +1316,11 @@ export default function AdminConsole({ displayName, session }) {
             <h3 className="font-display text-lg font-semibold mb-1">
               {modalItem.action === "approve" ? "Approve" : "Reject"} — {modalItem.title}
             </h3>
-            <p className="text-xs text-[var(--muted-foreground)] mb-4">This action will be permanently logged in the audit trail.</p>
+            <p className="text-xs text-[var(--muted-foreground)] mb-4">A reason is required and will be recorded in the audit trail.</p>
             <textarea
               value={reason}
               onChange={(e) => setReason(e.target.value)}
-              placeholder={modalItem.action === "reject" ? "Rejection reason (required)..." : "Optional notes..."}
+              placeholder={modalItem.action === "reject" ? "Reason for rejection..." : "Reason for approval..."}
               className="w-full border border-[var(--border)] rounded-xl p-3 text-sm resize-none h-24 outline-none focus:ring-2 focus:ring-[var(--ring)] transition-all bg-[var(--muted)]"
             />
             <div className="flex gap-2 mt-4">
@@ -1001,7 +1336,7 @@ export default function AdminConsole({ displayName, session }) {
               <button
                 onClick={() => {
                   const m = modalItem;
-                  const note = reason.trim() || (m.action === "approve" ? "Approved after review" : "");
+                  const note = reason.trim();
                   const done = [m.action === "approve" ? "Approval recorded" : "Rejection recorded", `${m.title} was ${m.action === "approve" ? "approved" : "rejected"}.`];
                   if (m.kind === "house") {
                     run(() => moderateHouse({ adminId, houseId: m.id, status: m.action === "approve" ? "Published" : "Rejected", reason: note }), ...done);
@@ -1013,7 +1348,7 @@ export default function AdminConsole({ displayName, session }) {
                   setModalItem(null);
                   setReason("");
                 }}
-                disabled={modalItem.action === "reject" && !reason.trim()}
+                disabled={!reason.trim()}
                 className={`flex-1 py-2.5 rounded-xl text-sm font-semibold text-white transition-colors ${modalItem.action === "approve" ? "bg-emerald-600 hover:bg-emerald-700" : "bg-red-600 hover:bg-red-700"} disabled:opacity-40 disabled:cursor-not-allowed`}
               >
                 Confirm {modalItem.action === "approve" ? "Approval" : "Rejection"}

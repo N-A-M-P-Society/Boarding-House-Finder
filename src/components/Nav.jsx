@@ -2,7 +2,7 @@
 // Import useState from React.
 // useState allows this component to remember information that can change,
 // such as whether the sidebar is collapsed or the login menu is open.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 // Import the Logo component used to display the UniRent logo.
 import Logo from "./Logo.jsx";
@@ -45,6 +45,8 @@ export default function Nav({
   onNavigate,
   userRole,
   displayName,
+  profilePhotoUrl,
+  unreadMessageCount = 0,
   isDark,
   onToggleTheme,
   onLogin,
@@ -58,6 +60,14 @@ export default function Nav({
   // Controls whether the sidebar is expanded or collapsed.
   // false means the sidebar starts in its expanded state.
   const [collapsed, setCollapsed] = useState(false);
+
+  useEffect(() => {
+    const mobileViewport = window.matchMedia("(max-width: 640px)");
+    const syncSidebar = () => setCollapsed(mobileViewport.matches);
+    syncSidebar();
+    mobileViewport.addEventListener("change", syncSidebar);
+    return () => mobileViewport.removeEventListener("change", syncSidebar);
+  }, []);
 
   // Determine the user's role.
   // If userRole is null or undefined, treat the user as a guest.
@@ -146,7 +156,7 @@ export default function Nav({
           title="Expand sidebar"
           aria-label="Expand sidebar"
           aria-expanded="false"
-          className="absolute -right-4 top-1/2 z-50 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] text-base text-[var(--muted-foreground)] shadow-md transition-colors hover:border-[var(--primary)] hover:bg-[var(--secondary)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+          className="absolute -right-4 top-1/2 z-50 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] text-base text-[var(--muted-foreground)] shadow-md transition-colors hover:border-[var(--primary)] hover:bg-[var(--secondary)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] max-[640px]:hidden"
         >
           ›
         </button>
@@ -163,6 +173,8 @@ export default function Nav({
           // Check whether this navigation item matches the current page.
           // This is used to highlight the active page.
           const active = currentPage === item.page;
+          const hasUnreadMessages = item.page === "chat" && unreadMessageCount > 0;
+          const unreadTitle = unreadMessageCount === 1 ? "1 unread message" : `${unreadMessageCount} unread messages`;
 
           return (
             <button
@@ -174,10 +186,10 @@ export default function Nav({
 
               // When collapsed, show the page name as a tooltip.
               // When expanded, the page name is already visible.
-              title={collapsed ? item.label : undefined}
+              title={collapsed ? `${item.label}${hasUnreadMessages ? ` (${unreadTitle})` : ""}` : undefined}
 
               className={`
-                flex items-center gap-3 rounded-xl transition-all text-sm font-medium
+                relative flex items-center gap-3 rounded-xl transition-all text-sm font-medium
 
                 /* Adjust spacing and alignment depending on sidebar width. */
                 ${collapsed ? "justify-center px-2 py-2.5" : "px-3 py-2.5"}
@@ -203,19 +215,15 @@ export default function Nav({
                 <span className="truncate">{item.label}</span>
               )}
 
-              {/* UNREAD MESSAGE BADGE */}
-              {/* Display a small notification badge beside Messages.
-                  It currently shows a fixed number of 2. */}
-              {item.page === "chat" && !collapsed && (
-                <span className="ml-auto w-4 h-4 rounded-full bg-[var(--accent)] text-white text-[10px] flex items-center justify-center font-bold flex-shrink-0">
-                  2
+              {/* Show the total unread message count only when messages are unread. */}
+              {hasUnreadMessages && !collapsed && (
+                <span aria-label={unreadTitle} className="ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold text-white">
+                  {unreadMessageCount > 99 ? "99+" : unreadMessageCount}
                 </span>
               )}
 
-              {/* When collapsed, show a small notification dot instead
-                  of the unread message number. */}
-              {item.page === "chat" && collapsed && (
-                <span className="absolute top-1 right-1 w-2 h-2 rounded-full bg-[var(--accent)]" />
+              {hasUnreadMessages && collapsed && (
+                <span aria-hidden="true" className="absolute right-1 top-1 h-2 w-2 rounded-full bg-[var(--accent)]" />
               )}
             </button>
           );
@@ -273,8 +281,10 @@ export default function Nav({
 
               {/* Display the first letter of the user's name.
                   If no displayName exists, use the first letter of their role. */}
-              <div className="w-7 h-7 rounded-full bg-[var(--primary)] text-white flex items-center justify-center text-xs font-bold flex-shrink-0">
-                {(displayName || userRole).charAt(0).toUpperCase()}
+              <div className="w-9 h-9 overflow-hidden rounded-full bg-[var(--primary)] text-white flex items-center justify-center text-sm font-bold flex-shrink-0">
+                {profilePhotoUrl
+                  ? <img src={profilePhotoUrl} alt={`${displayName || userRole} profile`} className="h-full w-full object-cover" />
+                  : (displayName || userRole).charAt(0).toUpperCase()}
               </div>
 
               {/* Show the user's name and role when expanded. */}

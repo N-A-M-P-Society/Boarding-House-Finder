@@ -23,28 +23,29 @@ Finding off-campus housing is stressful: listings are scattered across social me
 |---|---|
 | 🗺️ **Leaflet map** with OpenStreetMap tiles, safety-colored price pins, campus + gate markers, and an 800 m (≈10 min) walk radius | ✅ Live |
 | 🛡️ **Property verification** – admins approve/reject listings and landlord documents; badges (WiFi, Water 24/7, Vetted Safe) are granted by admins | ✅ Live |
-| 📊 **Safety score engine (0–10)** – weighted from police distance, lighting, gated access, CCTV; weights editable by SuperAdmin | ✅ Live |
-| 💬 **Real-time chat** between students and landlords (Supabase Realtime) with quick-reply templates | ✅ Live |
-| 📅 **Bookings** – students request, landlords confirm/decline; the database blocks overlapping bookings | ✅ Live |
+| 📊 **Safety score engine (0–10)** – weighted from police distance, lighting, gated access, and CCTV; non-gated listings receive partial credit, non-required CCTV is neutral, and admins can recalculate scores from the latest inspection | ✅ Live |
+| 💬 **Real-time chat** between students and landlords with unread counts that clear when a conversation is opened | ✅ Live |
+| 📅 **Date-based room bookings** – database-backed availability calendars, overlapping requests blocked by the database, and landlord move-out dates that release rooms | ✅ Live |
+| 🧭 **Landlord calendar** – filter by property and room; click bookings to see the student and booking dates | ✅ Live |
 | ❤️ **Saved listings** and roommate-preference quiz (stored on the student profile) | ✅ Live |
 | ⭐ **Verified student reviews** – only students with a confirmed/completed booking can review; admins can hide abusive reviews | ✅ Live |
 | 🧾 **Admin audit log** of every moderation action | ✅ Live |
 | ⚖️ **Side-by-side comparison** of up to 4 listings | ✅ Live (kept in memory per session) |
-| 🤝 **Roommate matching, requests & vouching** | 🧪 UI prototype (demo data, no table yet) |
-| 📆 **Room availability calendar** | 🧪 UI prototype (demo data) |
-| 📎 **Document & photo uploads** (Supabase Storage) | 🚧 Not wired yet – only file names are stored |
+| 🖼️ **Profile, listing, and room photos** with carousel keyboard controls | ✅ Live |
+| 📎 **Landlord verification documents** (private Supabase Storage) | ✅ Live |
+| 🤝 **Roommate matching and vouching** | 🧪 Not implemented; roommate inquiries continue in Messages |
 | 💳 **Automated payment verification** via Supabase Edge Functions & database webhooks | ✅ Live |
 
 ---
 
 ## 🛠️ Tech Stack
 
-- **Framework:** [Next.js](https://nextjs.org/) 15 (App Router) with React 19. The app is a client-side single-page shell mounted from `src/app/page.jsx`.
+- **Framework:** [Next.js](https://nextjs.org/) 16 (App Router) with React 19. The app is a client-side single-page shell mounted from `src/app/page.jsx`.
 - **Styling:** [Tailwind CSS](https://tailwindcss.com/) v4
 - **Backend:** [Supabase](https://supabase.com/)
   - **Database:** PostgreSQL with Row-Level Security (RLS) and triggers for business rules
   - **Auth:** Supabase Auth (email/password) with roles `Student`, `Landlord`, `Admin`, `SuperAdmin`
-  - **Realtime:** WebSocket subscription on the `messages` table
+  - **Realtime:** WebSocket subscriptions on `messages` and `boarding_houses`
 - **Maps:** [Leaflet](https://leafletjs.com/) with OpenStreetMap tiles (no API key needed)
 - **Edge Functions:** Deno/TypeScript (`notify-payment-verification` triggered by `public.payments` table updates)
 
@@ -67,7 +68,7 @@ npm install        # or: yarn install / pnpm install
 
 ### 3. Set up the database
 
-Open your Supabase project → **SQL Editor** and run these two files **in order**:
+For a **new development project**, open Supabase → **SQL Editor** and run these files in order:
 
 1. `supabase_schema.sql` – creates all tables, enums, triggers, helper functions and RLS policies.
    > ⚠️ This script **deletes existing data** (including `auth.users`). Use a development project only.
@@ -76,9 +77,12 @@ Open your Supabase project → **SQL Editor** and run these two files **in order
    - restricts landlords to seeing their own listings; students and guests still see published listings
    - `landlord_public` and `message_peers` views (so students can see landlord names without exposing private documents)
    - a read policy so safety breakdowns of published houses are public
-   - an optional `image_urls` column for photos
+   - Supabase Storage buckets and policies for public photos and private verification documents
+   - booking vacancy dates and a privacy-safe RPC for published room availability
    - a starter ADDU campus gate (**replace with your real gate coordinates**)
-   - Realtime enabled for `messages`
+   - Realtime enabled for `messages` and `boarding_houses` so messages and listing score changes update live
+
+For an **existing project**, do not rerun the destructive schema script; run the updated `supabase_additions.sql` only.
 
 ### 4. Configure environment variables
 
@@ -135,7 +139,14 @@ Security is enforced in the database through RLS and triggers (`supabase_schema.
 
 - **Walking distance:** each property's coordinates are compared with the nearest row in `campus_gates` (haversine distance ÷ 80 m/min).
 - **Map:** `src/components/LeafletMap.jsx` draws the pins, gates, walk radius and popups. Pin color reflects the safety score (green ≥ 8.5, amber ≥ 7, red below).
-- **Safety score:** an admin records an inspection (police distance, lighting 1–5, gated access, CCTV active/required). Each factor is converted to 0–10 and combined using the weights in `system_settings` (default 25% each).
+- **Safety score:** an admin records an inspection (police distance, lighting 1–5, gated access, CCTV active/required). Police proximity scores 10 nearby and bottoms out at 2 from 2 km; lighting is converted from 1–5 to 2–10; no gate receives 4/10; CCTV coverage is 0–10 when cameras are required and neutral 5/10 when they are not. The factors are combined using the saved weights in `system_settings` (default 25% each).
+- **Recalculating scores:** new inspections use the current formula and weights. Existing scores are stored values; an admin can recalculate each listing from its latest inspection in **Admin Console → Safety Inspection**. Once `supabase_additions.sql` enables Realtime on `boarding_houses`, open student pages refresh when a score changes.
+
+## 📅 How room bookings work
+
+- Students select check-in and check-out dates; a pending request reserves those dates while the landlord reviews it.
+- The database prevents overlapping pending or confirmed bookings. Public calendars show date status only, not the tenant’s name.
+- Landlords can filter their calendar by property and room, open a booking to view who booked it, and record a move-out date. The move-out date is the first day the room can be booked again.
 
 ---
 
@@ -169,15 +180,15 @@ supabase_additions.sql    Required add-ons (run second)
 - **Map pins missing** – the property needs `latitude` and `longitude`. Add them in the Add Listing form.
 - **Can't sign in after sign-up** – email confirmation is on; turn it off (step 5) or confirm via email.
 - **Student sign-up rejected** – students must use an `@addu.edu.ph` email.
-- **Chat doesn't update live** – make sure `supabase_additions.sql` ran (it enables Realtime on `messages`).
+- **Chat or unread count doesn't update live** – make sure the updated `supabase_additions.sql` ran (it enables Realtime on `messages`).
+- **A safety score is unchanged** – existing scores are not automatically rewritten when the formula changes. In Admin Console → Safety Inspection, click **Recalculate score** beside the listing; make sure the updated additions script ran for live student-page updates.
+- **Room availability is missing** – run the updated `supabase_additions.sql` to add booking vacancy dates and the public-safe availability function.
 
 ---
 
 ## 🗓️ Roadmap
 
-- Supabase Storage for property photos and verification documents
-- Database tables for roommate requests, matching and vouching
-- Booking-driven availability calendar
+- Structured roommate requests, matching, and vouching (requests currently use direct messages)
 - Persisted room comparisons
 
 ---

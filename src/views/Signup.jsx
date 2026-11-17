@@ -1,5 +1,13 @@
 import { useState } from "react";
-import { signUp, loadProfile, updateStudentProfile, updateLandlordProfile } from "../lib/api.js";
+import {
+  signUp,
+  loadProfile,
+  updateStudentProfile,
+  updateLandlordProfile,
+  uploadPublicImages,
+  uploadVerificationDocuments,
+  submitVerification,
+} from "../lib/api.js";
 import Logo from "../components/Logo.jsx";
 const ROLE_OPTIONS = [
   { role: "student", label: "Student", icon: "🎓", desc: "I'm looking for off-campus housing near ADDU" },
@@ -20,8 +28,9 @@ export default function Signup({ onBack, onLogin }) {
   const [gender, setGender] = useState("");
   const [academicYear, setAcademicYear] = useState("");
   // Step 2 — landlord extra
-  const [govIdFile, setGovIdFile] = useState("");
-  const [ownershipFile, setOwnershipFile] = useState("");
+  const [profilePhotoFile, setProfilePhotoFile] = useState(null);
+  const [govIdFile, setGovIdFile] = useState(null);
+  const [ownershipFile, setOwnershipFile] = useState(null);
   const [error, setError] = useState("");
   function handleStep1(e) {
     e.preventDefault();
@@ -74,23 +83,27 @@ export default function Signup({ onBack, onLogin }) {
         phoneNumber: phone,
       });
       if (!res.session) {
-        setNotice("Account created. Check your email to confirm your address, then sign in.");
+        setNotice("Account created. Confirm your email and sign in to upload your profile photo and landlord verification documents.");
         return;
       }
       const profile = await loadProfile();
+      const profilePhotoUrl = profilePhotoFile
+        ? (await uploadPublicImages([profilePhotoFile], "profiles"))[0]
+        : null;
       if (selectedRole === "student" && profile?.studentId) {
         await updateStudentProfile(profile.studentId, {
           phone_number: phone || null,
           student_id_number: studentId,
           academic_year: academicYear,
           gender,
+          ...(profilePhotoUrl ? { profile_photo_url: profilePhotoUrl } : {}),
         });
       } else if (selectedRole === "landlord" && profile?.landlordId) {
-        // Only the file names are stored here; wire these to Supabase Storage to keep the actual files.
+        const [governmentIdPath, ownershipProofPath] = await uploadVerificationDocuments([govIdFile, ownershipFile]);
+        await submitVerification({ governmentIdPath, ownershipProofPath });
         await updateLandlordProfile(profile.landlordId, {
           phone_number: phone || null,
-          government_id: govIdFile,
-          proof_of_ownership_url: ownershipFile,
+          ...(profilePhotoUrl ? { profile_photo_url: profilePhotoUrl } : {}),
         });
       }
       onLogin(await loadProfile());
@@ -125,12 +138,12 @@ export default function Signup({ onBack, onLogin }) {
           <div className="text-5xl">{selectedRole === "student" ? "🎓" : "🏠"}</div>
           <h2 className="font-display text-3xl xl:text-4xl font-semibold leading-tight">
             {selectedRole === "student"
-              ? "Join 2,400+ students who found safe housing near ADDU."
+              ? "Find current housing listings near ADDU and connect directly with landlords."
               : "Start connecting with verified ADDU student tenants."}
           </h2>
           <p className="text-white/65 text-sm leading-relaxed max-w-xs">
             {selectedRole === "student"
-              ? "Get matched with verified listings, compatible roommates, and direct chat with landlords."
+              ? "Browse approved listings, save your roommate preferences, and message landlords."
               : "List your property, earn verification badges, and manage bookings — all on one platform."}
           </p>
         </div>
@@ -293,6 +306,12 @@ export default function Signup({ onBack, onLogin }) {
               </div>
 
               <div>
+                <label className="block text-sm font-semibold mb-1.5">Profile photo <span className="font-normal text-[var(--muted-foreground)]">(optional)</span></label>
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProfilePhotoFile(event.target.files?.[0] || null)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">JPG, PNG, or WebP · up to 8 MB</p>
+              </div>
+
+              <div>
                 <label className="block text-sm font-semibold mb-1.5">
                   Gender <span className="text-red-500">*</span>
                 </label>
@@ -406,6 +425,12 @@ export default function Signup({ onBack, onLogin }) {
               </div>
 
               <div>
+                <label className="block text-sm font-semibold mb-1.5">Profile photo <span className="font-normal text-[var(--muted-foreground)]">(optional)</span></label>
+                <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(event) => setProfilePhotoFile(event.target.files?.[0] || null)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">JPG, PNG, or WebP · up to 8 MB</p>
+              </div>
+
+              <div>
                 <label className="block text-sm font-semibold mb-1.5">
                   Government-issued ID <span className="text-red-500">*</span>
                 </label>
@@ -415,18 +440,18 @@ export default function Signup({ onBack, onLogin }) {
                   <input
                     type="file"
                     className="hidden"
-                    accept="image/*,.pdf"
-                    onChange={(e) => setGovIdFile(e.target.files?.[0]?.name || "")}
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    onChange={(e) => setGovIdFile(e.target.files?.[0] || null)}
                   />
                   {govIdFile ? (
                     <>
                       <span className="text-2xl">✅</span>
-                      <span className="text-xs font-medium text-[var(--primary)]">{govIdFile}</span>
+                      <span className="text-xs font-medium text-[var(--primary)]">{govIdFile.name}</span>
                     </>
                   ) : (
                     <>
                       <span className="text-2xl">📄</span>
-                      <span className="text-xs text-[var(--muted-foreground)]">Click to upload — JPG, PNG, or PDF</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">Click to upload — JPG, PNG, WebP, or PDF</span>
                     </>
                   )}
                 </label>
@@ -445,18 +470,18 @@ export default function Signup({ onBack, onLogin }) {
                   <input
                     type="file"
                     className="hidden"
-                    accept="image/*,.pdf"
-                    onChange={(e) => setOwnershipFile(e.target.files?.[0]?.name || "")}
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    onChange={(e) => setOwnershipFile(e.target.files?.[0] || null)}
                   />
                   {ownershipFile ? (
                     <>
                       <span className="text-2xl">✅</span>
-                      <span className="text-xs font-medium text-[var(--primary)]">{ownershipFile}</span>
+                      <span className="text-xs font-medium text-[var(--primary)]">{ownershipFile.name}</span>
                     </>
                   ) : (
                     <>
                       <span className="text-2xl">🏡</span>
-                      <span className="text-xs text-[var(--muted-foreground)]">Click to upload — JPG, PNG, or PDF</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">Click to upload — JPG, PNG, WebP, or PDF</span>
                     </>
                   )}
                 </label>

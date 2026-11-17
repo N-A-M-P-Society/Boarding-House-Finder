@@ -1,4 +1,6 @@
 
+import { useRef, useState } from "react";
+
 // PROPERTY CARD COMPONENT
 // This component displays a rental property's information in a card format.
 //
@@ -26,6 +28,18 @@ export default function PropertyCard({
   onCompare,
   inComparison
 }) {
+  const [imageIndex, setImageIndex] = useState(0);
+  const touchStartX = useRef(null);
+  const suppressImageClick = useRef(false);
+  const images = property.images?.length ? property.images : ["/unirent-logo.png"];
+  const showPreviousImage = (event) => {
+    event.stopPropagation();
+    setImageIndex((index) => (index - 1 + images.length) % images.length);
+  };
+  const showNextImage = (event) => {
+    event.stopPropagation();
+    setImageIndex((index) => (index + 1) % images.length);
+  };
 
   // CALCULATE THE AVERAGE REVIEW RATING
   // Check whether the property has any reviews.
@@ -80,13 +94,49 @@ export default function PropertyCard({
       {/* PROPERTY IMAGE SECTION */}
       {/* This section displays the property's main image,
           badges, safety score, walking time, and review rating. */}
-      <div className="relative h-48 overflow-hidden bg-[var(--muted)]">
-
-        {/* Display the first image in the property's images array. */}
+      <div
+        className="relative h-48 touch-pan-y overflow-hidden bg-[var(--muted)]"
+        role="group"
+        tabIndex={images.length > 1 ? 0 : undefined}
+        aria-label={`${property.title} photo carousel, ${imageIndex + 1} of ${images.length}`}
+        onKeyDown={(event) => {
+          if (images.length < 2) return;
+          if (event.key === "ArrowLeft") {
+            event.preventDefault();
+            event.stopPropagation();
+            setImageIndex((index) => (index - 1 + images.length) % images.length);
+          } else if (event.key === "ArrowRight") {
+            event.preventDefault();
+            event.stopPropagation();
+            setImageIndex((index) => (index + 1) % images.length);
+          }
+        }}
+        onClick={(event) => {
+          if (suppressImageClick.current) {
+            event.stopPropagation();
+            suppressImageClick.current = false;
+          }
+        }}
+        onTouchStart={(event) => {
+          touchStartX.current = event.touches[0]?.clientX ?? null;
+        }}
+        onTouchEnd={(event) => {
+          const startX = touchStartX.current;
+          touchStartX.current = null;
+          if (startX == null || images.length < 2 || !event.changedTouches[0]) return;
+          const delta = event.changedTouches[0].clientX - startX;
+          if (Math.abs(delta) > 40) {
+            setImageIndex((index) => (index + (delta < 0 ? 1 : -1) + images.length) % images.length);
+            suppressImageClick.current = true;
+          }
+          touchStartX.current = null;
+        }}
+        aria-label={`${property.title} photos`}
+      >
         <img
-          src={property.images[0]}
-          alt={property.title}
-          className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
+          src={images[imageIndex]}
+          alt={`${property.title}, photo ${imageIndex + 1} of ${images.length}`}
+          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
         />
 
         {/* Add a dark gradient overlay over the bottom of the image.
@@ -98,7 +148,7 @@ export default function PropertyCard({
             Examples might include verified or featured labels,
             depending on the badge data supplied by the application. */}
         <div className="absolute top-3 left-3 flex gap-1.5 flex-wrap">
-          {property.badges.slice(0, 2).map((badge) => (
+          {property.badges.slice(0, 1).map((badge) => (
             <span
               // Use the badge text as its unique React key.
               key={badge}
@@ -113,10 +163,37 @@ export default function PropertyCard({
         {/* SAFETY SCORE DISPLAY */}
         {/* Position the safety score at the upper-right corner of the image. */}
         <div className="absolute top-3 right-3">
-          <span className={`px-2 py-1 rounded-lg text-xs font-bold ${safetyColor}`}>
-            ⚡ {property.safetyScore}
+          <span
+            className={`rounded-lg px-2 py-1 text-xs font-bold ${safetyColor}`}
+            title="Overall safety score on a 10-point scale"
+          >
+            Safety {Number(property.safetyScore).toFixed(1)}/10
           </span>
         </div>
+
+        {images.length > 1 && (
+          <>
+            <button
+              type="button"
+              onClick={showPreviousImage}
+              aria-label="Previous photo"
+              className="absolute left-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-lg text-white shadow transition hover:bg-black/75 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:opacity-0 md:group-hover:opacity-100"
+            >
+              ‹
+            </button>
+            <button
+              type="button"
+              onClick={showNextImage}
+              aria-label="Next photo"
+              className="absolute right-2 top-1/2 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-full bg-black/55 text-lg text-white shadow transition hover:bg-black/75 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white md:opacity-0 md:group-hover:opacity-100"
+            >
+              ›
+            </button>
+            <span className="absolute bottom-12 right-3 rounded-full bg-black/60 px-2 py-1 text-[10px] font-medium text-white">
+              {imageIndex + 1} / {images.length}
+            </span>
+          </>
+        )}
 
         {/* WALKING TIME AND REVIEW RATING */}
         {/* Display these details along the bottom of the property image. */}

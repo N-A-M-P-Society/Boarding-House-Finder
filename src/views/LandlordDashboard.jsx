@@ -1,77 +1,41 @@
 import { useEffect, useState } from "react";
 import { useData } from "../context/DataContext.jsx";
-import { fetchBookings, setBookingStatus } from "../lib/api.js";
+import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
+import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
+import {
+  completeBooking,
+  fetchBookings,
+  setBookingStatus,
+  updateLandlordProfile,
+  updateHouse,
+  uploadPublicImages,
+  uploadVerificationDocuments,
+  submitVerification,
+  fetchLatestLandlordVerification,
+} from "../lib/api.js";
 import AddListingModal from "../components/AddListingModal.jsx";
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
-const LANDLORD_ROOMMATE_REQUESTS = [
-  {
-    id: "sofia",
-    initial: "S",
-    name: "Sofia Mendez",
-    gender: "Female",
-    program: "BS Psychology · 3rd Year",
-    room: "Room 1 — Bed A · 1 of 2 occupied",
-    moveIn: "July 1, 2026",
-    choice: "Landlord suggestion",
-    status: "NEEDS SHORTLIST",
-  },
-  {
-    id: "mark",
-    initial: "M",
-    name: "Mark Dela Cruz",
-    gender: "Male",
-    program: "BS Engineering · 2nd Year",
-    room: "Room 5 — Bed A · 1 of 2 occupied",
-    moveIn: "July 1, 2026",
-    choice: "Vouched: Paolo Ramos",
-    status: "VOUCH REVIEW",
-  },
-  {
-    id: "ana",
-    initial: "A",
-    name: "Ana Reyes",
-    gender: "Female",
-    program: "BS Nursing · 4th Year",
-    room: "Room 3 — Bed B · 1 of 2 occupied",
-    moveIn: "August 1, 2026",
-    choice: "Shortlist sent · 3 candidates",
-    status: "SHORTLIST SENT",
-  },
-];
-const SHORTLIST_CANDIDATES = [
-  { id: "camille", initial: "C", name: "Camille Reyes", program: "BS Nursing · 2nd Year", score: 91, partial: [] },
-  { id: "bea", initial: "B", name: "Bea Villanueva", program: "BS Education · 4th Year", score: 86, partial: ["Study"] },
-  { id: "anna", initial: "A", name: "Anna Lim", program: "BS Biology · 3rd Year", score: 78, partial: ["Clean", "Guests"] },
-  {
-    id: "joy",
-    initial: "J",
-    name: "Joy Tan",
-    program: "BS Accountancy · 3rd Year",
-    score: 64,
-    partial: ["Sleep", "Study"],
-    mismatch: ["Guests"],
-  },
-];
-function AvailabilityCalendar({ rooms, bookings, onEvent, onEmptyMonth }) {
+function AvailabilityCalendar({ rooms, bookings, onEvent }) {
   const statusClasses = {
     available: "bg-emerald-100 text-emerald-700",
     reserved: "bg-amber-100 text-amber-700",
     occupied: "bg-red-100 text-red-700",
   };
   function bookingForMonth(roomId, monthIndex) {
-    const monthStart = new Date(2026, monthIndex, 1);
-    const monthEnd = new Date(2026, monthIndex + 1, 0);
+    const year = new Date().getFullYear();
+    const monthStart = new Date(year, monthIndex, 1);
+    const nextMonthStart = new Date(year, monthIndex + 1, 1);
     return bookings.find((booking) => {
       if (booking.roomId !== roomId || ["cancelled", "completed"].includes(booking.status.toLowerCase())) return false;
       const start = new Date(`${booking.startDate}T00:00:00`);
       const end = new Date(`${booking.endDate}T00:00:00`);
-      return start <= monthEnd && end >= monthStart;
+      return start < nextMonthStart && end > monthStart;
     });
   }
   return (
     <div className="overflow-x-auto">
-      <div className="min-w-[52rem]">
-        <div className="grid grid-cols-[minmax(7rem,1.2fr)_repeat(12,minmax(2.75rem,1fr))] gap-1">
+      <div className="min-w-[59rem]">
+        <div className="grid grid-cols-[minmax(7rem,1.2fr)_repeat(12,minmax(4rem,1fr))] gap-1">
           <div className="py-1 text-xs font-medium text-[var(--muted-foreground)]">Room</div>
           {MONTHS.map((month) => (
             <div key={month} className="py-1 text-center text-xs font-medium text-[var(--muted-foreground)]">
@@ -84,7 +48,7 @@ function AvailabilityCalendar({ rooms, bookings, onEvent, onEmptyMonth }) {
             Add a room to one of your listings to see it on the calendar.
           </p>
         ) : rooms.map((room) => (
-          <div key={room.id} className="grid grid-cols-[minmax(7rem,1.2fr)_repeat(12,minmax(2.75rem,1fr))] items-center gap-1 border-t border-[var(--border)] py-2">
+          <div key={room.id} className="grid grid-cols-[minmax(7rem,1.2fr)_repeat(12,minmax(4rem,1fr))] items-center gap-1 border-t border-[var(--border)] py-2">
             <div className="truncate px-1 text-xs font-medium" title={`${room.name} · ${room.propertyTitle}`}>
               <span className="block truncate">{room.name}</span>
               <span className="block truncate text-[10px] font-normal text-[var(--muted-foreground)]">{room.propertyTitle}</span>
@@ -98,14 +62,14 @@ function AvailabilityCalendar({ rooms, bookings, onEvent, onEmptyMonth }) {
                 <button
                   key={month}
                   type="button"
-                  onClick={() => booking
-                    ? onEvent(room, status, month, booking)
-                    : onEmptyMonth(room, monthIndex)}
-                  className={`h-10 rounded-lg border border-[var(--border)] text-[9px] font-semibold uppercase transition-colors hover:ring-2 hover:ring-[var(--ring)] ${statusClasses[status] || statusClasses.available}`}
-                  aria-label={`${room.name}, ${month} 2026: ${status}`}
-                  title={`${month} 2026 · ${status}${booking ? ` · ${booking.studentName}` : ""}`}
+                  onClick={() => booking && onEvent(room, status, month, booking)}
+                  disabled={!booking}
+                  className={`flex h-12 min-w-0 flex-col items-center justify-center rounded-lg border border-[var(--border)] text-[9px] font-semibold uppercase ${booking ? "transition-colors hover:ring-2 hover:ring-[var(--ring)]" : "cursor-default"} ${statusClasses[status] || statusClasses.available}`}
+                  aria-label={`${room.name}, ${month} ${new Date().getFullYear()}: ${status}${booking ? `, booked by ${booking.studentName}` : ""}`}
+                  title={`${month} ${new Date().getFullYear()} · ${status}${booking ? ` · ${booking.studentName}` : ""}`}
                 >
-                  {status}
+                  <span>{status}</span>
+                  {booking && <span className="block max-w-full truncate px-1 text-[8px] font-medium normal-case">{booking.studentName}</span>}
                 </button>
               );
             })}
@@ -115,58 +79,259 @@ function AvailabilityCalendar({ rooms, bookings, onEvent, onEmptyMonth }) {
     </div>
   );
 }
-export default function LandlordDashboard({onNavigate, onStartChat, displayName, session }) {
+export default function LandlordDashboard({ onNavigate, displayName, session, onProfilePhotoChange }) {
   const { properties: PROPERTIES, reload } = useData();
   const [bookings, setBookings] = useState([]);
+  const [bookingSearch, setBookingSearch] = useState("");
+  const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
+  const [bookingDetail, setBookingDetail] = useState(null);
+  const [bookingNotice, setBookingNotice] = useState(null);
+  const [moveOutDate, setMoveOutDate] = useState("");
+  const [moveOutBusy, setMoveOutBusy] = useState(false);
+  const [listingSearch, setListingSearch] = useState("");
+  const [listingStatusFilter, setListingStatusFilter] = useState("all");
+  const [listingDetail, setListingDetail] = useState(null);
+  const [listingPhotoFiles, setListingPhotoFiles] = useState([]);
+  const [listingPhotoBusy, setListingPhotoBusy] = useState(false);
+  const [listingPhotoError, setListingPhotoError] = useState("");
+  const [profilePhotoUrl, setProfilePhotoUrl] = useState(session?.landlord?.profile_photo_url || "");
+  const [landlordVerification, setLandlordVerification] = useState(null);
+  const [governmentIdFile, setGovernmentIdFile] = useState(null);
+  const [ownershipProofFile, setOwnershipProofFile] = useState(null);
+  const [verificationBusy, setVerificationBusy] = useState(false);
+  const [verificationError, setVerificationError] = useState("");
+  const verificationDocumentsStored = Boolean(
+    landlordVerification?.government_id_url &&
+    landlordVerification?.proof_of_ownership_url &&
+    [landlordVerification.government_id_url, landlordVerification.proof_of_ownership_url]
+      .every((path) => path.startsWith("verification/") || /^https:\/\//i.test(path))
+  );
   const [addOpen, setAddOpen] = useState(false);
+  const today = new Date();
+  const todayDate = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
   async function refreshBookings() {
     try {
       setBookings(await fetchBookings());
-    } catch {}
+      return "";
+    } catch (error) {
+      setBookingNotice({ title: "Bookings could not be loaded", message: error.message, error: true });
+      return error.message;
+    }
+  }
+  async function updateBookingStatus(booking, status) {
+    try {
+      await setBookingStatus(booking.id, status);
+      const refreshError = await refreshBookings();
+      setBookingDetail(null);
+      const action = status === "Confirmed" ? "confirmed" : booking.status === "Confirmed" ? "cancelled" : "declined";
+      setBookingNotice({
+        title: `Booking ${action}`,
+        message: `${booking.studentName}'s booking for ${booking.roomName} was ${action}.${refreshError ? ` The booking list could not be refreshed: ${refreshError}` : ""}`,
+        error: Boolean(refreshError),
+      });
+    } catch (error) {
+      setBookingNotice({ title: "Booking update failed", message: error.message, error: true });
+    }
+  }
+  async function markBookingVacated(booking) {
+    if (!moveOutDate || moveOutDate < booking.startDate || moveOutDate > todayDate) {
+      setBookingNotice({ title: "Move-out date is invalid", message: "Choose a date between the booking start date and today.", error: true });
+      return;
+    }
+
+    setMoveOutBusy(true);
+    try {
+      await completeBooking(booking.id, moveOutDate);
+      const bookingsRefreshError = await refreshBookings();
+      let listingsRefreshError = "";
+      try {
+        await reload();
+      } catch (error) {
+        listingsRefreshError = error.message;
+      }
+      setBookingDetail(null);
+      const refreshErrors = [bookingsRefreshError, listingsRefreshError].filter(Boolean);
+      setBookingNotice({
+        title: refreshErrors.length === 0 ? "Room marked as vacated" : "Move-out date saved",
+        message: `The room is available for new bookings starting ${moveOutDate}.${refreshErrors.length === 0 ? "" : ` Dashboard refresh failed: ${refreshErrors.join("; ")}`}`,
+        error: refreshErrors.length > 0,
+      });
+    } catch (error) {
+      setBookingNotice({ title: "Could not release the room", message: error.message, error: true });
+    } finally {
+      setMoveOutBusy(false);
+    }
   }
   useEffect(() => {
     refreshBookings();
   }, [session?.landlordId]);
+  useEffect(() => {
+    if (!session?.landlordId) return;
+    fetchLatestLandlordVerification()
+      .then(setLandlordVerification)
+      .catch((error) => setBookingNotice({ title: "Verification status could not be loaded", message: error.message, error: true }));
+  }, [session?.landlordId]);
+  useEffect(() => {
+    setListingPhotoFiles([]);
+    setListingPhotoError("");
+  }, [listingDetail?.id]);
+  function chooseListingPhotos(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (files.length > 8) {
+      setListingPhotoError("Choose no more than 8 photos at a time.");
+      setListingPhotoFiles([]);
+      return;
+    }
+    const invalidFile = files.find((file) =>
+      !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 8 * 1024 * 1024
+    );
+    if (invalidFile) {
+      setListingPhotoError(`${invalidFile.name} must be a JPG, PNG, or WebP image no larger than 8 MB.`);
+      setListingPhotoFiles([]);
+      return;
+    }
+    setListingPhotoError("");
+    setListingPhotoFiles(files);
+  }
+  async function addListingPhotos() {
+    if (!listingDetail || listingPhotoFiles.length === 0) return;
+    setListingPhotoBusy(true);
+    setListingPhotoError("");
+    try {
+      const uploadedImages = await uploadPublicImages(listingPhotoFiles, "listings");
+      const currentImages = (listingDetail.images || []).filter((image) => typeof image === "string" && !image.startsWith("data:"));
+      const image_urls = [...currentImages, ...uploadedImages];
+      await updateHouse(listingDetail.id, { image_urls });
+      setListingDetail({ ...listingDetail, images: image_urls });
+      setListingPhotoFiles([]);
+      await reload();
+    } catch (error) {
+      setListingPhotoError(error.message);
+    } finally {
+      setListingPhotoBusy(false);
+    }
+  }
+  async function submitLandlordVerification(event) {
+    event.preventDefault();
+    if (!governmentIdFile || !ownershipProofFile) {
+      setVerificationError("Attach both your government-issued ID and property ownership proof.");
+      return;
+    }
+
+    setVerificationBusy(true);
+    setVerificationError("");
+    try {
+      const [governmentIdPath, ownershipProofPath] = await uploadVerificationDocuments([governmentIdFile, ownershipProofFile]);
+      await submitVerification({ governmentIdPath, ownershipProofPath });
+      setLandlordVerification(await fetchLatestLandlordVerification());
+      setGovernmentIdFile(null);
+      setOwnershipProofFile(null);
+    } catch (error) {
+      setVerificationError(error.message);
+    } finally {
+      setVerificationBusy(false);
+    }
+  }
   const [activeTab, setActiveTab] = useState("overview");
-  const [selectedRoom, setSelectedRoom] = useState("");
-  const [roommateView, setRoommateView] = useState("list");
-  const [shortlistSelected, setShortlistSelected] = useState(["camille", "bea", "anna"]);
-  const [roommateNotice, setRoommateNotice] = useState(null);
-  const [calendarScreen, setCalendarScreen] = useState("calendar");
+  const [selectedCalendarPropertyId, setSelectedCalendarPropertyId] = useState("");
+  const [selectedRoom, setSelectedRoom] = useState("all");
   const [roomDetail, setRoomDetail] = useState(null);
-  const [availabilityOpen, setAvailabilityOpen] = useState(false);
-  const [availabilityRoom, setAvailabilityRoom] = useState("");
-  const [availabilityStart, setAvailabilityStart] = useState("");
-  const [availabilityEnd, setAvailabilityEnd] = useState("");
-  const [availabilityStatus, setAvailabilityStatus] = useState("available");
-  const [showUpdateSummary, setShowUpdateSummary] = useState(false);
-  const [calendarToast, setCalendarToast] = useState(null);
   const myProperties = PROPERTIES.filter((p) => p.landlordId === String(session?.landlordId));
-  const calendarRooms = myProperties.flatMap((property) =>
-    property.rooms.map((room) => ({ ...room, propertyTitle: property.title })),
-  );
+  const myBookings = bookings.filter((booking) => myProperties.some((property) => property.id === booking.propertyId));
+  const selectedCalendarProperty = myProperties.find((property) => property.id === selectedCalendarPropertyId) || myProperties[0];
+  const calendarRooms = selectedCalendarProperty
+    ? selectedCalendarProperty.rooms.map((room) => ({ ...room, propertyTitle: selectedCalendarProperty.title }))
+    : [];
   const selectedCalendarRoom = calendarRooms.find((room) => room.id === selectedRoom);
   const visibleCalendarRooms = selectedRoom === "all"
     ? calendarRooms
     : [selectedCalendarRoom || calendarRooms[0]].filter(Boolean);
   const totalRooms = myProperties.flatMap((p) => p.rooms).length;
-  const availableRooms = myProperties.flatMap((p) => p.rooms).filter((r) => r.status === "available").length;
-  const incomingRequests = LANDLORD_ROOMMATE_REQUESTS;
+  const currentlyBookedRoomIds = new Set(bookings
+    .filter((booking) =>
+      ["Pending", "Confirmed"].includes(booking.status) &&
+      booking.startDate <= todayDate &&
+      todayDate < booking.endDate
+    )
+    .map((booking) => booking.roomId));
+  const availableRooms = myProperties.flatMap((property) => property.rooms)
+    .filter((room) => room.status === "available" && !currentlyBookedRoomIds.has(room.id)).length;
+  const filteredBookings = myBookings.filter((booking) => {
+    const query = bookingSearch.trim().toLowerCase();
+    const matchesSearch = !query ||
+      String(booking.studentName || "").toLowerCase().includes(query) ||
+      String(booking.propertyTitle || "").toLowerCase().includes(query) ||
+      String(booking.roomName || "").toLowerCase().includes(query);
+    return matchesSearch && (bookingStatusFilter === "all" || String(booking.status).toLowerCase() === bookingStatusFilter);
+  });
+  const filteredProperties = myProperties.filter((property) => {
+    const query = listingSearch.trim().toLowerCase();
+    const matchesSearch = !query ||
+      property.title.toLowerCase().includes(query) ||
+      String(property.address || "").toLowerCase().includes(query);
+    return matchesSearch && (listingStatusFilter === "all" || property.status === listingStatusFilter);
+  });
   return (
     <div className="landlord-dashboard max-w-6xl mx-auto px-4 sm:px-6 py-8">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-full bg-[var(--primary)] text-white flex items-center justify-center text-xl font-bold">{(displayName || "L").charAt(0).toUpperCase()}</div>
+          <ProfilePhotoUpload
+            name={displayName}
+            photoUrl={profilePhotoUrl}
+            onUploaded={async (url) => {
+              await updateLandlordProfile(session.landlordId, { profile_photo_url: url });
+              setProfilePhotoUrl(url);
+              onProfilePhotoChange?.(url);
+            }}
+          />
           <div>
             <h1 className="font-display text-2xl font-semibold">{displayName}</h1>
             <p className="text-[var(--muted-foreground)] text-sm">Landlord · {myProperties.length} propert{myProperties.length === 1 ? "y" : "ies"}</p>
           </div>
         </div>
-        <button onClick={() => setAddOpen(true)} className="hidden sm:flex items-center gap-2 px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity">
+        <button onClick={() => setAddOpen(true)} className="flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 bg-[var(--primary)] text-white rounded-xl text-xs sm:text-sm font-semibold hover:opacity-90 transition-opacity">
           + Add Listing
         </button>
       </div>
+
+      {landlordVerification?.verification_status === "Approved" || (landlordVerification?.verification_status === "Pending" && verificationDocumentsStored) ? (
+        <div className="mb-6 flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
+          <span className={`mt-0.5 rounded-full px-2.5 py-1 text-[10px] font-semibold uppercase ${landlordVerification.verification_status === "Approved" ? "bg-emerald-100 text-emerald-700" : "bg-amber-100 text-amber-800"}`}>
+            {landlordVerification.verification_status}
+          </span>
+          <p className="text-sm text-[var(--muted-foreground)]">
+            {landlordVerification.verification_status === "Approved"
+              ? "Your landlord documents have been approved."
+              : "Your landlord documents are being reviewed. You can continue managing your listings while they are reviewed."}
+          </p>
+        </div>
+      ) : (
+        <form onSubmit={submitLandlordVerification} className="mb-6 space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+          <div>
+            <h2 className="font-display text-lg font-semibold">Complete landlord verification</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Upload a government-issued ID and property ownership proof. These files are stored privately and only you and UniRent admins can access them.</p>
+            {landlordVerification?.rejection_reason && <p className="mt-2 rounded-xl bg-red-50 p-3 text-xs text-red-700">Previous submission: {landlordVerification.rejection_reason}</p>}
+          </div>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <label className="rounded-xl border border-dashed border-[var(--border)] p-4 text-sm">
+              <span className="mb-2 block font-semibold">Government-issued ID</span>
+              <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => setGovernmentIdFile(event.target.files?.[0] || null)} className="w-full text-xs" />
+              <span className="mt-1 block text-xs text-[var(--muted-foreground)]">{governmentIdFile?.name || "Image or PDF · maximum 10 MB"}</span>
+            </label>
+            <label className="rounded-xl border border-dashed border-[var(--border)] p-4 text-sm">
+              <span className="mb-2 block font-semibold">Property ownership proof</span>
+              <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" onChange={(event) => setOwnershipProofFile(event.target.files?.[0] || null)} className="w-full text-xs" />
+              <span className="mt-1 block text-xs text-[var(--muted-foreground)]">{ownershipProofFile?.name || "Image or PDF · maximum 10 MB"}</span>
+            </label>
+          </div>
+          {verificationError && <p role="alert" className="text-sm text-red-600">{verificationError}</p>}
+          <button type="submit" disabled={verificationBusy || !governmentIdFile || !ownershipProofFile} className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+            {verificationBusy ? "Uploading documents…" : "Submit for verification"}
+          </button>
+        </form>
+      )}
 
       {/* Tabs */}
       <div className="flex gap-1 border-b border-[var(--border)] mb-8 overflow-x-auto">
@@ -174,7 +339,7 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
           ["overview", "Overview"],
           ["listings", "My Listings"],
           ["calendar", "Calendar"],
-          ["roommates", `Roommate Requests${incomingRequests.length ? ` (${incomingRequests.length})` : ""}`],
+          ["roommates", "Roommate Requests"],
         ].map(([tab, label]) => (
           <button
             key={tab}
@@ -186,9 +351,6 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
             }`}
           >
             {label}
-            {tab === "roommates" && incomingRequests.some((r) => r.status === "pending") && (
-              <span className="ml-1.5 w-2 h-2 rounded-full bg-[var(--accent)] inline-block" />
-            )}
           </button>
         ))}
       </div>
@@ -196,12 +358,11 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
       {/* ── Overview ── */}
       {activeTab === "overview" && (
         <div className="space-y-8">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
             {[
               { label: "Properties", value: myProperties.length, icon: "🏠", color: "bg-[var(--secondary)] text-[var(--primary)]" },
               { label: "Total Rooms", value: totalRooms, icon: "🚪", color: "bg-amber-50 text-amber-700" },
-              { label: "Available", value: availableRooms, icon: "✅", color: "bg-emerald-50 text-emerald-700" },
-              { label: "Roommate Requests", value: incomingRequests.length, icon: "🤝", color: "bg-purple-50 text-purple-700" },
+              { label: "Available Rooms", value: availableRooms, icon: "✅", color: "bg-emerald-50 text-emerald-700" },
             ].map((stat) => (
               <div key={stat.label} className={`rounded-2xl border border-[var(--border)] p-4 ${stat.color}`}>
                 <div className="text-2xl mb-1">{stat.icon}</div>
@@ -211,72 +372,71 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
             ))}
           </div>
 
-          <div className="grid md:grid-cols-2 gap-6">
-            <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-              <h3 className="font-semibold mb-4">Booking Requests</h3>
-              <div className="space-y-3">
-                {bookings.length === 0 && <p className="text-xs text-[var(--muted-foreground)]">No booking requests yet.</p>}
-                {bookings.slice(0, 6).map((b) => (
-                  <div key={b.id} className="p-3 rounded-xl bg-[var(--muted)] text-left">
-                    <div className="flex justify-between items-center mb-0.5">
-                      <span className="font-medium text-sm">{b.studentName}</span>
-                      <span className="text-xs font-semibold text-[var(--primary)]">{b.status}</span>
-                    </div>
-                    <p className="text-xs text-[var(--muted-foreground)]">{b.propertyTitle} · {b.roomName} · {b.startDate} → {b.endDate}</p>
-                    {b.status === "Pending" && (
-                      <div className="flex gap-2 mt-2">
-                        <button
-                          onClick={async () => {
-                            await setBookingStatus(b.id, "Confirmed");
-                            refreshBookings();
-                          }}
-                          className="px-3 py-1 text-xs rounded-lg bg-emerald-600 text-white"
-                        >
-                          Confirm
-                        </button>
-                        <button
-                          onClick={async () => {
-                            await setBookingStatus(b.id, "Cancelled");
-                            refreshBookings();
-                          }}
-                          className="px-3 py-1 text-xs rounded-lg bg-red-100 text-red-700"
-                        >
-                          Decline
-                        </button>
-                      </div>
+          <div className="space-y-6">
+            <section className="space-y-3">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                <div>
+                  <h2 className="font-display text-xl font-semibold">Booking Requests</h2>
+                  <p className="mt-1 text-xs text-[var(--muted-foreground)]">{filteredBookings.length} of {myBookings.length} bookings for your listings</p>
+                </div>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <input type="search" value={bookingSearch} onChange={(event) => setBookingSearch(event.target.value)} placeholder="Search student, property, room" aria-label="Search booking requests" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+                  <select value={bookingStatusFilter} onChange={(event) => setBookingStatusFilter(event.target.value)} aria-label="Filter booking requests by status" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+                    <option value="all">All statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="confirmed">Confirmed</option>
+                    <option value="cancelled">Cancelled</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+              </div>
+              <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+                <table className="w-full min-w-[48rem] text-sm">
+                  <thead className="bg-[var(--muted)]"><tr>{["Student", "Property / room", "Lease dates", "Rent", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                  <PaginatedTableBody
+                    rows={filteredBookings}
+                    columns={6}
+                    resetKey={`${bookingSearch}|${bookingStatusFilter}`}
+                    emptyMessage={myBookings.length ? "No bookings match your search or status filter." : "No booking requests for your listings."}
+                    renderRow={(booking) => (
+                      <tr key={booking.id} className="hover:bg-[var(--muted)]">
+                        <td className="px-4 py-3 font-medium">{booking.studentName}</td>
+                        <td className="px-4 py-3">{booking.propertyTitle} · {booking.roomName}</td>
+                        <td className="px-4 py-3 text-xs">{booking.startDate} → {booking.endDate}</td>
+                        <td className="px-4 py-3">₱{Number(booking.monthlyRate).toLocaleString()}/mo</td>
+                        <td className="px-4 py-3"><span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-xs font-semibold text-[var(--primary)]">{booking.status}</span></td>
+                        <td className="px-4 py-3"><button type="button" onClick={() => { setBookingDetail(booking); setMoveOutDate(todayDate); }} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Review</button></td>
+                      </tr>
                     )}
-                  </div>
-                ))}
+                  />
+                </table>
               </div>
-            </div>
+            </section>
 
-            <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-              <h3 className="font-semibold mb-4">Listing Status</h3>
-              <div className="space-y-3">
-                {myProperties.map((p) => (
-                  <div key={p.id} className="flex items-center gap-3">
-                    <div className="w-10 h-10 rounded-lg overflow-hidden bg-[var(--muted)] flex-shrink-0">
-                      <img src={p.images[0]} alt="" className="w-full h-full object-cover" />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium text-sm truncate">{p.title}</p>
-                      <p className="text-xs text-[var(--muted-foreground)]">₱{p.monthlyRent.toLocaleString()}/mo</p>
-                    </div>
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-xs font-semibold ${
-                        p.status === "approved"
-                          ? "bg-emerald-100 text-emerald-700"
-                          : p.status === "pending"
-                            ? "bg-amber-100 text-amber-700"
-                            : "bg-red-100 text-red-700"
-                      }`}
-                    >
-                      {p.status}
-                    </span>
-                  </div>
-                ))}
+            <section className="space-y-3">
+              <h2 className="font-display text-xl font-semibold">Listing Status</h2>
+              <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+                <table className="w-full min-w-[38rem] text-sm">
+                  <thead className="bg-[var(--muted)]"><tr>{["Listing", "Starting rent", "Rooms", "Safety", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                  <PaginatedTableBody
+                    rows={myProperties}
+                    columns={6}
+                    resetKey={`${session?.landlordId}|${myProperties.length}`}
+                    emptyMessage="Create a listing to see its status here."
+                    renderRow={(property) => (
+                      <tr key={property.id} className="hover:bg-[var(--muted)]">
+                        <td className="px-4 py-3 font-medium">{property.title}</td>
+                        <td className="px-4 py-3">₱{Number(property.monthlyRent).toLocaleString()}/mo</td>
+                        <td className="px-4 py-3">{property.rooms.length}</td>
+                        <td className="px-4 py-3">{Number(property.safetyScore).toFixed(1)}/10</td>
+                        <td className="px-4 py-3 capitalize">{property.status}</td>
+                        <td className="px-4 py-3"><button type="button" onClick={() => setListingDetail(property)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">View</button></td>
+                      </tr>
+                    )}
+                  />
+                </table>
               </div>
-            </div>
+            </section>
           </div>
         </div>
       )}
@@ -284,519 +444,287 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
       {/* ── Listings ── */}
       {activeTab === "listings" && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="font-display text-xl font-semibold">My Properties</h2>
-            <button onClick={() => setAddOpen(true)} className="text-sm px-4 py-2 bg-[var(--primary)] text-white rounded-xl font-medium hover:opacity-90">
-              + Add Listing
-            </button>
-          </div>
-          {myProperties.map((p) => (
-            <div key={p.id} className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-              <div className="flex gap-4">
-                <div className="w-24 h-20 rounded-xl overflow-hidden bg-[var(--muted)] flex-shrink-0">
-                  <img src={p.images[0]} alt={p.title} className="w-full h-full object-cover" />
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-start justify-between gap-2 mb-1">
-                    <h3 className="font-semibold text-sm leading-snug">{p.title}</h3>
-                    <span
-                      className={`px-2.5 py-1 rounded-full text-xs font-semibold flex-shrink-0 ${
-                        p.status === "approved"
-                          ? "bg-emerald-100 text-emerald-700"
-                          : p.status === "pending"
-                            ? "bg-amber-100 text-amber-700"
-                            : "bg-red-100 text-red-700"
-                      }`}
-                    >
-                      {p.status}
-                    </span>
-                  </div>
-                  <p className="text-xs text-[var(--muted-foreground)] mb-2">{p.address}</p>
-                  <div className="flex flex-wrap gap-3 text-xs">
-                    <span className="text-[var(--primary)] font-semibold">₱{p.monthlyRent.toLocaleString()}/mo</span>
-                    <span className="text-[var(--muted-foreground)]">⚡ {p.safetyScore}</span>
-                    <span className="text-[var(--muted-foreground)]">
-                      {p.rooms.filter((r) => r.status === "available").length}/{p.rooms.length} available
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <div className="mt-4 flex gap-2">
-                <button className="px-3 py-1.5 text-xs font-medium bg-[var(--muted)] hover:bg-[var(--secondary)] rounded-lg transition-colors">
-                  Edit
-                </button>
-                <button className="px-3 py-1.5 text-xs font-medium bg-[var(--muted)] hover:bg-[var(--secondary)] rounded-lg transition-colors">
-                  Upload Badge Docs
-                </button>
-                <button
-                  onClick={() => setActiveTab("calendar")}
-                  className="px-3 py-1.5 text-xs font-medium bg-[var(--secondary)] text-[var(--primary)] rounded-lg transition-colors"
-                >
-                  Calendar
-                </button>
-              </div>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+            <div>
+              <h2 className="font-display text-xl font-semibold">My Listings</h2>
+              <p className="mt-1 text-xs text-[var(--muted-foreground)]">{filteredProperties.length} of {myProperties.length} listings</p>
             </div>
-          ))}
+          </div>
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <input type="search" value={listingSearch} onChange={(event) => setListingSearch(event.target.value)} placeholder="Search listing or address" aria-label="Search your listings" className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+            <select value={listingStatusFilter} onChange={(event) => setListingStatusFilter(event.target.value)} aria-label="Filter your listings by status" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+              <option value="all">All statuses</option>
+              <option value="approved">Published</option>
+              <option value="pending">Pending</option>
+              <option value="suspended">Suspended</option>
+              <option value="rejected">Rejected</option>
+            </select>
+          </div>
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[48rem] text-sm">
+              <thead className="bg-[var(--muted)]"><tr>{["Listing", "Address", "Available rooms", "Starting rent", "Safety", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+              <PaginatedTableBody
+                rows={filteredProperties}
+                columns={7}
+                resetKey={`${listingSearch}|${listingStatusFilter}`}
+                emptyMessage={myProperties.length ? "No listings match your search or status filter." : "You have not created any listings yet."}
+                renderRow={(property) => (
+                  <tr key={property.id} className="hover:bg-[var(--muted)]">
+                    <td className="px-4 py-3 font-medium">{property.title}</td>
+                    <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{property.address}</td>
+                    <td className="px-4 py-3">{property.rooms.filter((room) => room.status === "available").length} / {property.rooms.length}</td>
+                    <td className="px-4 py-3">₱{Number(property.monthlyRent).toLocaleString()}/mo</td>
+                    <td className="px-4 py-3 font-semibold">{Number(property.safetyScore).toFixed(1)}/10</td>
+                    <td className="px-4 py-3 capitalize">{property.status}</td>
+                    <td className="px-4 py-3"><button type="button" onClick={() => setListingDetail(property)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Review</button></td>
+                  </tr>
+                )}
+              />
+            </table>
+          </div>
         </div>
       )}
 
       {/* ── Calendar ── */}
       {activeTab === "calendar" && (
         <div className="space-y-6">
-          {calendarScreen === "lease" ? (
-            <>
-              <h2 className="font-display text-xl font-semibold">Lease Confirmation</h2>
-              <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 space-y-5">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-display text-lg font-semibold">Lease Details</h3>
-                  <span className="rounded-full bg-emerald-100 px-2.5 py-1 text-[11px] font-semibold text-emerald-700">CONFIRMED</span>
+          <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Room Availability Calendar</h2>
+              {selectedCalendarProperty && <p className="mt-1 text-xs text-[var(--muted-foreground)]">{selectedCalendarProperty.title}</p>}
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <select
+                value={selectedCalendarProperty?.id || ""}
+                onChange={(event) => {
+                  setSelectedCalendarPropertyId(event.target.value);
+                  setSelectedRoom("all");
+                }}
+                aria-label="Filter calendar by property"
+                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm outline-none"
+              >
+                {myProperties.length === 0 && <option value="">No listings</option>}
+                {myProperties.map((property) => <option key={property.id} value={property.id}>{property.title}</option>)}
+              </select>
+              <select
+                value={selectedRoom}
+                onChange={(event) => setSelectedRoom(event.target.value)}
+                aria-label="Filter calendar by room"
+                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm outline-none"
+              >
+                <option value="all">All rooms</option>
+                {calendarRooms.map((room) => (
+                  <option key={room.id} value={room.id}>{room.name} · {room.propertyTitle}</option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div className="mb-4 flex items-center justify-between">
+              <span className="font-semibold text-lg">{new Date().getFullYear()}</span>
+              <span className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-medium">Year</span>
+            </div>
+            <AvailabilityCalendar
+              rooms={visibleCalendarRooms}
+              bookings={bookings}
+              onEvent={(room, status, month, booking) => setRoomDetail({ room, status, month, booking })}
+            />
+            <div className="mt-4 flex flex-wrap gap-4 text-xs">
+              {[
+                ["bg-emerald-100", "Available"],
+                ["bg-amber-100", "Reserved"],
+                ["bg-red-100", "Occupied"],
+              ].map(([className, label]) => (
+                <div key={label} className="flex items-center gap-1.5">
+                  <span className={`h-3 w-3 rounded ${className}`} />
+                  <span className="text-[var(--muted-foreground)]">{label}</span>
                 </div>
-                <div className="grid sm:grid-cols-2 gap-x-6 gap-y-5">
-                  {[
-                    ["Property", "Campus Housing Residence"],
-                    ["Room", "Room 204"],
-                    ["Tenant", "Student Name"],
-                    ["Status", "CONFIRMED"],
-                    ["Lease Start", "June 2026"],
-                    ["Lease End", "June 2026"],
-                  ].map(([label, value]) => (
-                    <div key={label}>
-                      <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
-                      <div className="text-sm font-medium mt-0.5">{value}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex flex-col sm:flex-row sm:items-center gap-4 pt-1">
-                  <button
-                    onClick={() => {
-                      setCalendarScreen("update");
-                      setCalendarToast("Room 204 availability has been updated.");
-                    }}
-                    className="px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
-                  >
-                    Confirm Lease
-                  </button>
-                  <p className="text-xs text-[var(--muted-foreground)]">Confirming marks June 2026 as OCCUPIED on the room calendar.</p>
-                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Roommate request messaging */}
+      {activeTab === "roommates" && (
+        <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6">
+          <div>
+            <h2 className="font-display text-xl font-semibold">Roommate Requests</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Roommate requests are sent as direct messages and are not tracked as separate records.</p>
+          </div>
+          <button type="button" onClick={() => onNavigate("chat")} className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white">
+            Open Messages
+          </button>
+        </div>
+      )}
+
+      {bookingDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="w-full max-w-xl overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="landlord-booking-detail-title">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
+              <div>
+                <h3 id="landlord-booking-detail-title" className="font-display text-lg font-semibold">Booking request</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">{bookingDetail.studentName} · {bookingDetail.propertyTitle} · {bookingDetail.roomName}</p>
               </div>
-            </>
-          ) : calendarScreen === "update" ? (
-            <>
-              <div className="flex items-center justify-between gap-4">
-                <h2 className="font-display text-xl font-semibold">Real-Time Update</h2>
-                <button
-                  onClick={() => {
-                    setCalendarScreen("calendar");
-                    setShowUpdateSummary(true);
-                  }}
-                  className="px-4 py-2 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90"
-                >
-                  View Updated Calendar
-                </button>
-              </div>
-              <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 flex flex-col items-center gap-2">
-                {["LEASE CONFIRMED", "ROOM CALENDAR UPDATED", "DATES MARKED OCCUPIED", "DASHBOARD UPDATED", "SEARCH RESULTS UPDATED"].map(
-                  (step, index, steps) => (
-                    <div key={step} className="contents">
-                      <div
-                        className={`w-full max-w-xs rounded-xl py-2.5 text-center text-xs font-semibold ${index === 0 ? "bg-[var(--primary)] text-white" : "bg-[var(--secondary)] border border-[var(--border)]"}`}
-                      >
-                        {step}
-                      </div>
-                      {index < steps.length - 1 && <span className="text-[var(--primary)] font-semibold">↓</span>}
-                    </div>
-                  ),
+              <button type="button" onClick={() => setBookingDetail(null)} aria-label="Close booking details" className="flex h-8 w-8 items-center justify-center rounded-full bg-[var(--border)]">✕</button>
+            </div>
+            <div className="grid gap-4 p-5 sm:grid-cols-2">
+              {[
+                ["Student", bookingDetail.studentName],
+                ["Status", bookingDetail.status],
+                ["Property", bookingDetail.propertyTitle],
+                ["Room", bookingDetail.roomName],
+                ["Lease starts", bookingDetail.startDate],
+                ["Lease ends", bookingDetail.endDate],
+                ...(bookingDetail.actualEndDate ? [["Room released from", bookingDetail.actualEndDate]] : []),
+                ["Monthly rent", `₱${Number(bookingDetail.monthlyRate).toLocaleString()}`],
+                ["Request received", bookingDetail.createdAt || "—"],
+              ].map(([label, value]) => <div key={label}><div className="text-xs text-[var(--muted-foreground)]">{label}</div><div className="mt-1 text-sm font-medium">{value}</div></div>)}
+            </div>
+            <div className="space-y-3 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <div className="flex flex-wrap justify-end gap-2">
+                <button type="button" onClick={() => setBookingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+                {bookingDetail.status === "Pending" && (
+                  <>
+                    <button type="button" onClick={() => updateBookingStatus(bookingDetail, "Cancelled")} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Decline</button>
+                    <button type="button" onClick={() => updateBookingStatus(bookingDetail, "Confirmed")} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white">Confirm booking</button>
+                  </>
+                )}
+                {bookingDetail.status === "Confirmed" && bookingDetail.startDate > todayDate && (
+                  <button type="button" onClick={() => updateBookingStatus(bookingDetail, "Cancelled")} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Cancel future booking</button>
                 )}
               </div>
-            </>
-          ) : (
-            <>
-              {showUpdateSummary && (
-                <div className="space-y-4">
-                  <h2 className="font-display text-xl font-semibold">Automatic Calendar Update</h2>
-                  <div className="grid sm:grid-cols-[1fr_auto_1fr] items-center gap-4 bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-                    <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-4">
-                      <div className="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase">Before</div>
-                      <div className="mt-1 flex items-center gap-3">
-                        <span className="font-display font-semibold">Room 204</span>
-                        <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[10px] font-semibold text-emerald-700">
-                          AVAILABLE
-                        </span>
-                      </div>
-                      <div className="text-xs text-[var(--muted-foreground)] mt-1">June 2026</div>
-                    </div>
-                    <span className="text-[var(--primary)] text-xl">→</span>
-                    <div className="rounded-xl border border-[var(--border)] bg-[var(--background)] p-4">
-                      <div className="text-[10px] font-semibold text-[var(--muted-foreground)] uppercase">After</div>
-                      <div className="mt-1 flex items-center gap-3">
-                        <span className="font-display font-semibold">Room 204</span>
-                        <span className="rounded-full bg-red-100 px-2 py-0.5 text-[10px] font-semibold text-red-700">OCCUPIED</span>
-                      </div>
-                      <div className="text-xs text-[var(--muted-foreground)] mt-1">June 2026</div>
-                    </div>
-                  </div>
+              {bookingDetail.status === "Confirmed" && bookingDetail.startDate <= todayDate && (
+                <div className="flex flex-col gap-3 rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 sm:flex-row sm:items-end sm:justify-between">
+                  <label className="text-xs text-[var(--muted-foreground)]">
+                    Move-out date (first day available again)
+                    <input
+                      type="date"
+                      value={moveOutDate}
+                      min={bookingDetail.startDate}
+                      max={todayDate}
+                      onChange={(event) => setMoveOutDate(event.target.value)}
+                      className="mt-1 block rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm text-[var(--foreground)]"
+                    />
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => markBookingVacated(bookingDetail)}
+                    disabled={moveOutBusy || !moveOutDate}
+                    className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    {moveOutBusy ? "Updating…" : "Mark room vacated"}
+                  </button>
                 </div>
               )}
+              {bookingDetail.status === "Completed" && (
+                <p className="text-right text-xs text-[var(--muted-foreground)]">
+                  The room is available for new bookings from {bookingDetail.actualEndDate || bookingDetail.endDate}.
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                <h2 className="font-display text-xl font-semibold">Room Availability Calendar</h2>
-                <div className="flex gap-2">
-                  <button
-                    onClick={() => {
-                      setAvailabilityRoom(selectedCalendarRoom?.id || calendarRooms[0]?.id || "");
-                      setAvailabilityOpen(true);
-                    }}
-                    disabled={calendarRooms.length === 0}
-                    className="px-3 py-2 bg-[var(--primary)] text-white rounded-lg text-sm font-semibold hover:opacity-90"
-                  >
-                    Set availability
-                  </button>
-                  <select
-                    value={selectedRoom || calendarRooms[0]?.id || ""}
-                    onChange={(e) => setSelectedRoom(e.target.value)}
-                    className="text-sm border border-[var(--border)] rounded-lg px-3 py-2 bg-[var(--card)] outline-none"
-                  >
-                    <option value={calendarRooms[0]?.id || ""}>
-                      {calendarRooms[0]
-                        ? `${calendarRooms[0].name} · ${calendarRooms[0].propertyTitle}`
-                        : "No rooms"}
-                    </option>
-                    <option value="all">All rooms</option>
-                    {calendarRooms.slice(1).map((room) => (
-                      <option key={room.id} value={room.id}>
-                        {room.name} · {room.propertyTitle}
-                      </option>
+      {listingDetail && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="landlord-listing-detail-title">
+            <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
+              <div>
+                <h3 id="landlord-listing-detail-title" className="font-display text-lg font-semibold">{listingDetail.title}</h3>
+                <p className="mt-1 text-xs text-[var(--muted-foreground)]">{listingDetail.address}</p>
+              </div>
+              <button type="button" onClick={() => setListingDetail(null)} aria-label="Close listing details" className="flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-[var(--border)]">✕</button>
+            </div>
+            <div className="space-y-5 overflow-y-auto p-5">
+              <section className="space-y-3">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Listing photos</h4>
+                {listingDetail.images?.filter((image) => typeof image === "string" && !image.startsWith("data:")).length ? (
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                    {listingDetail.images.filter((image) => typeof image === "string" && !image.startsWith("data:")).map((image, index) => (
+                      <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-[var(--border)]">
+                        <img src={image} alt={`${listingDetail.title} photo ${index + 1}`} className="h-32 w-full object-cover" />
+                      </a>
                     ))}
-                  </select>
-                </div>
-              </div>
-
-              <div className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-5">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="flex items-center gap-2">
-                    <button className="px-3 py-2 border border-[var(--border)] rounded-lg text-sm font-medium hover:bg-[var(--muted)]">
-                      Today
-                    </button>
-                    <button
-                      className="px-3 py-2 border border-[var(--border)] rounded-lg text-sm font-medium hover:bg-[var(--muted)]"
-                      aria-label="Previous year"
-                    >
-                      ‹
-                    </button>
-                    <button
-                      className="px-3 py-2 border border-[var(--border)] rounded-lg text-sm font-medium hover:bg-[var(--muted)]"
-                      aria-label="Next year"
-                    >
-                      ›
-                    </button>
-                    <span className="font-semibold text-lg ml-2">2026</span>
                   </div>
-                  <span className="px-3 py-2 border border-[var(--border)] rounded-lg text-sm font-medium">Year</span>
-                </div>
-                <AvailabilityCalendar
-                  rooms={visibleCalendarRooms}
-                  bookings={bookings}
-                  onEvent={(room, status, month, booking) => setRoomDetail({ room, status, month, booking })}
-                  onEmptyMonth={(room, month) => {
-                    setAvailabilityRoom(room.id);
-                    setAvailabilityStart(String(month));
-                    setAvailabilityEnd(String(month));
-                    setAvailabilityOpen(true);
-                  }}
-                />
-                <div className="flex flex-wrap gap-4 mt-4 text-xs">
-                  {[
-                    ["bg-emerald-100", "Available"],
-                    ["bg-amber-100", "Reserved"],
-                    ["bg-red-100", "Occupied"],
-                    ["bg-red-950 border border-red-800", "Blocked (confirmed lease)"],
-                  ].map(([className, label]) => (
-                    <div key={label} className="flex items-center gap-1.5">
-                      <span className={`w-3 h-3 rounded ${className}`} />
-                      <span className="text-[var(--muted-foreground)]">{label}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {/* ── Roommate Requests ── */}
-      {activeTab === "roommates" && roommateView === "list" && (
-        <div className="space-y-4">
-          <h2 className="font-display text-xl font-semibold">Roommate Requests</h2>
-          <div className="rounded-xl border border-[var(--primary)] bg-[var(--secondary)] p-4 text-sm text-[var(--primary)]">
-            Requests are only open for rooms that fit 2 or more people, and roommates must be the same gender as the requesting student.
-            Shortlist several compatible students — the requester can only choose from your list.
-          </div>
-          {incomingRequests.map((request) => (
-            <div key={request.id} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-              <div className="flex flex-col gap-5">
-                <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-3">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--primary)] text-sm font-semibold text-white">
-                      {request.initial}
-                    </div>
-                    <div>
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-display text-lg font-semibold">{request.name}</h3>
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-semibold ${request.gender === "Female" ? "bg-pink-100 text-pink-700" : "bg-blue-100 text-blue-700"}`}
-                        >
-                          {request.gender === "Female" ? "♀" : "♂"} {request.gender}
-                        </span>
-                      </div>
-                      <p className="text-sm text-[var(--muted-foreground)]">{request.program}</p>
-                    </div>
-                  </div>
-                  <span
-                    className={`w-fit rounded-full px-3 py-1 text-[10px] font-semibold ${request.status === "SHORTLIST SENT" ? "bg-[var(--secondary)] text-[var(--primary)]" : "bg-amber-100 text-amber-700"}`}
-                  >
-                    {request.status}
-                  </span>
-                </div>
-                <div className="grid gap-4 sm:grid-cols-3">
-                  {[
-                    ["Room Requested", request.room],
-                    ["Preferred Move-in", request.moveIn],
-                    ["Roommate Choice", request.choice],
-                  ].map(([label, value]) => (
-                    <div key={label}>
-                      <div className="text-xs text-[var(--muted-foreground)]">{label}</div>
-                      <div className="text-sm font-medium">{value}</div>
-                    </div>
-                  ))}
-                </div>
-                <div className="flex justify-end">
-                  <button
-                    onClick={() => setRoommateView(request.id === "mark" ? "vouch" : "shortlist")}
-                    className={`${request.status === "SHORTLIST SENT" ? "border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)]" : "bg-[var(--primary)] text-white"} rounded-xl px-4 py-2.5 text-sm font-semibold hover:opacity-90`}
-                  >
-                    {request.id === "sofia" ? "Choose Roommates" : request.id === "mark" ? "Review Vouched Roommate" : "View Shortlist"}
+                ) : <p className="text-sm text-[var(--muted-foreground)]">No listing photos have been added yet.</p>}
+                <div className="flex flex-col gap-3 rounded-xl border border-dashed border-[var(--border)] p-3 sm:flex-row sm:items-center sm:justify-between">
+                  <label className="text-xs text-[var(--muted-foreground)]">
+                    <span className="mb-1 block font-semibold text-[var(--foreground)]">Add photos to this listing</span>
+                    <input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={chooseListingPhotos} className="max-w-full text-xs" />
+                    <span className="mt-1 block">{listingPhotoFiles.length ? `${listingPhotoFiles.length} photo${listingPhotoFiles.length === 1 ? "" : "s"} selected` : "JPG, PNG, or WebP · up to 8 MB each · max 8 at a time"}</span>
+                  </label>
+                  <button type="button" onClick={addListingPhotos} disabled={listingPhotoBusy || listingPhotoFiles.length === 0} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                    {listingPhotoBusy ? "Uploading…" : "Upload photos"}
                   </button>
                 </div>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {activeTab === "roommates" && roommateView === "shortlist" && (
-        <div className="space-y-5">
-          <button onClick={() => setRoommateView("list")} className="text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
-            ← Back to Roommate Requests
-          </button>
-          <h2 className="font-display text-xl font-semibold">Choose Roommates for Sofia Mendez</h2>
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 flex flex-col sm:flex-row sm:items-center gap-4">
-            <div className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--primary)] text-white font-semibold">S</div>
-            <div className="flex-1">
-              <div className="flex items-center gap-2">
-                <span className="font-semibold">Sofia Mendez</span>
-                <span className="rounded-full bg-pink-100 px-2 py-0.5 text-[10px] font-semibold text-pink-700">♀ Female</span>
-              </div>
-              <p className="text-xs text-[var(--muted-foreground)]">BS Psychology · 3rd Year · Quiet · Early riser · Tidy</p>
-            </div>
-            <div className="grid grid-cols-2 gap-6 text-sm">
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Room</div>
-                <div className="font-medium">Room 1 — Bed A</div>
-              </div>
-              <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Move-in</div>
-                <div className="font-medium">July 1, 2026</div>
-              </div>
-            </div>
-          </div>
-          <div className="flex items-center justify-between">
-            <h3 className="font-semibold">Eligible candidates</h3>
-            <span className="text-xs text-[var(--muted-foreground)]">Female students only · sorted by compatibility</span>
-          </div>
-          <div className="space-y-3">
-            {SHORTLIST_CANDIDATES.map((candidate) => {
-              const selected = shortlistSelected.includes(candidate.id);
-              return (
-                <button
-                  key={candidate.id}
-                  onClick={() =>
-                    setShortlistSelected((current) =>
-                      selected ? current.filter((id) => id !== candidate.id) : current.length < 3 ? [...current, candidate.id] : current,
-                    )
-                  }
-                  className={`w-full rounded-xl border p-4 text-left transition-colors ${selected ? "border-[var(--primary)] bg-[var(--secondary)]" : "border-[var(--border)] bg-[var(--card)] hover:border-[var(--primary)]/50"}`}
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center gap-4">
-                    <span
-                      className={`flex h-5 w-5 items-center justify-center rounded text-xs ${selected ? "bg-[var(--primary)] text-white" : "border border-[var(--border)]"}`}
-                    >
-                      {selected ? "✓" : ""}
-                    </span>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--primary)] text-white">
-                      {candidate.initial}
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2">
-                        <span className="font-semibold">{candidate.name}</span>
-                        <span className="rounded-full bg-pink-100 px-2 py-0.5 text-[10px] text-pink-700">♀ Female</span>
-                      </div>
-                      <span className="text-xs text-[var(--muted-foreground)]">{candidate.program}</span>
-                    </div>
-                    <div className="flex items-center gap-3">
-                      <div className="h-1.5 w-24 rounded-full bg-[var(--muted)]">
-                        <div
-                          className={`h-full rounded-full ${candidate.score >= 80 ? "bg-[var(--primary)]" : "bg-amber-600"}`}
-                          style={{ width: `${candidate.score}%` }}
-                        />
-                      </div>
-                      <span className={`text-sm font-semibold ${candidate.score >= 80 ? "text-[var(--primary)]" : "text-amber-700"}`}>
-                        {candidate.score}%
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap gap-1">
-                      {["Sleep", "Clean", "Study", "Guests"].map((trait) => (
-                        <span
-                          key={trait}
-                          className={`rounded-full px-2 py-0.5 text-[10px] ${candidate.mismatch?.includes(trait) ? "bg-red-100 text-red-700" : candidate.partial.includes(trait) ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}
-                        >
-                          {trait}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-          <p className="text-xs text-[var(--muted-foreground)]">
-            Sleep · Clean · Study · Guests — green = match, amber = partial, red = mismatch
-          </p>
-          <div className="sticky bottom-4 flex flex-col sm:flex-row sm:items-center gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4 shadow-xl">
-            <strong className="text-sm">{shortlistSelected.length} selected</strong>
-            <span className="flex-1 text-xs text-[var(--muted-foreground)]">Sofia can only choose from these students.</span>
-            <button
-              onClick={() => setShortlistSelected([])}
-              className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm font-medium"
-            >
-              Clear
-            </button>
-            <button
-              onClick={() => {
-                setRoommateNotice("Shortlist sent to Sofia.");
-                setRoommateView("list");
-              }}
-              disabled={!shortlistSelected.length}
-              className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40"
-            >
-              Send Shortlist to Sofia
-            </button>
-          </div>
-        </div>
-      )}
-
-      {activeTab === "roommates" && roommateView === "vouch" && (
-        <div className="space-y-5">
-          <button onClick={() => setRoommateView("list")} className="text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
-            ← Back to Roommate Requests
-          </button>
-          <div className="flex items-center justify-between">
-            <h2 className="font-display text-xl font-semibold">Vouched Roommate Request</h2>
-            <span className="rounded-full bg-amber-100 px-3 py-1 text-[10px] font-semibold text-amber-700">VOUCH REVIEW</span>
-          </div>
-          <div className="grid md:grid-cols-2 gap-4">
-            {[
-              { heading: "REQUESTING STUDENT", initial: "M", name: "Mark Dela Cruz", room: "Room 5 — Bed A", score: null },
-              { heading: "VOUCHED ROOMMATE", initial: "P", name: "Paolo Ramos", room: null, score: 82 },
-            ].map((person) => (
-              <div key={person.heading} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-                <div className="text-[10px] font-semibold text-[var(--muted-foreground)]">{person.heading}</div>
-                <div className="mt-3 flex items-center gap-3">
-                  <div className="flex h-11 w-11 items-center justify-center rounded-full bg-[var(--primary)] text-white">
-                    {person.initial}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <span className="font-display text-lg font-semibold">{person.name}</span>
-                      <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] text-blue-700">♂ Male</span>
-                    </div>
-                    <p className="text-xs text-[var(--muted-foreground)]">BS Engineering · 2nd Year</p>
-                  </div>
+                {listingPhotoError && <p role="alert" className="text-sm text-red-600">{listingPhotoError}</p>}
+              </section>
+              <section>
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Listing details</h4>
+                <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{listingDetail.description || "No description provided."}</p>
+                <div className="mt-3 flex flex-wrap gap-2 text-xs">
+                  <span className="rounded-full bg-[var(--secondary)] px-3 py-1 font-semibold text-[var(--primary)] capitalize">{listingDetail.status}</span>
+                  <span className="rounded-full bg-[var(--muted)] px-3 py-1">Starting rent ₱{Number(listingDetail.monthlyRent).toLocaleString()} / month</span>
+                  <span className="rounded-full bg-[var(--muted)] px-3 py-1">Safety {Number(listingDetail.safetyScore).toFixed(1)} / 10</span>
                 </div>
-                {person.room && (
-                  <div className="mt-4 grid grid-cols-2 gap-4 text-sm">
-                    <div>
-                      <span className="block text-xs text-[var(--muted-foreground)]">Room</span>
-                      <b>{person.room}</b>
-                    </div>
-                    <div>
-                      <span className="block text-xs text-[var(--muted-foreground)]">Preferred Move-in</span>
-                      <b>July 1, 2026</b>
-                    </div>
-                  </div>
-                )}
-                {person.score && (
-                  <div className="mt-4 flex items-center gap-2">
-                    <div className="h-1.5 flex-1 rounded-full bg-[var(--muted)]">
-                      <div className="h-full rounded-full bg-[var(--primary)]" style={{ width: `${person.score}%` }} />
-                    </div>
-                    <b className="text-sm text-[var(--primary)]">{person.score}%</b>
-                  </div>
-                )}
-              </div>
-            ))}
-          </div>
-          <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-            <h3 className="font-semibold mb-3">Eligibility Check</h3>
-            {["Room 5 fits 2 or more people (1 bed free)", "Same gender — both male", "Paolo is not assigned to another room"].map(
-              (item) => (
-                <div key={item} className="flex items-center gap-3 py-1 text-sm">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-emerald-100 text-xs text-emerald-700">✓</span>
-                  {item}
+              </section>
+              <section>
+                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Rooms</h4>
+                <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
+                  <table className="w-full min-w-[42rem] text-sm">
+                    <thead className="bg-[var(--muted)]"><tr>{["Room", "Monthly rent", "Capacity", "Availability", "Photos", "Amenities"].map((heading) => <th key={heading} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                    <PaginatedTableBody
+                      rows={listingDetail.rooms}
+                      columns={6}
+                      resetKey={listingDetail.id}
+                      emptyMessage="No rooms have been added to this listing."
+                      renderRow={(room) => (
+                        <tr key={room.id}>
+                          <td className="px-3 py-2 font-medium">{room.name}</td>
+                          <td className="px-3 py-2">₱{Number(room.price || 0).toLocaleString()}/mo</td>
+                          <td className="px-3 py-2">{room.capacity ?? "—"}</td>
+                          <td className="px-3 py-2 capitalize">{room.status}</td>
+                          <td className="px-3 py-2">{room.images?.length ? <div className="flex gap-1">{room.images.slice(0, 3).map((image, index) => <img key={`${room.id}-${image}`} src={image} alt={`${room.name} photo ${index + 1}`} className="h-9 w-12 rounded object-cover" />)}</div> : "—"}</td>
+                          <td className="px-3 py-2 text-xs">{room.amenities?.join(", ") || "—"}</td>
+                        </tr>
+                      )}
+                    />
+                  </table>
                 </div>
-              ),
-            )}
-          </div>
-          <div>
-            <label className="text-sm font-medium">Why Mark vouches for Paolo</label>
-            <div className="mt-1 rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 text-sm">
-              We're classmates with similar study schedules and would like to share the room.
+              </section>
+              <section className="rounded-xl border border-[var(--border)] bg-[var(--muted)] p-4">
+                <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Latest safety inspection</h4>
+                {listingDetail.safetyBreakdown.inspectedAt ? (
+                  <dl className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Date</dt><dd className="font-medium">{listingDetail.safetyBreakdown.inspectedAt}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Police distance</dt><dd className="font-medium">{listingDetail.safetyBreakdown.policeDistanceMeters == null ? "Not recorded" : `${listingDetail.safetyBreakdown.policeDistanceMeters.toLocaleString()} m`}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Lighting</dt><dd className="font-medium">{listingDetail.safetyBreakdown.lightingRating == null ? "Not recorded" : `${listingDetail.safetyBreakdown.lightingRating}/5`}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Secure gated access</dt><dd className="font-medium">{listingDetail.safetyBreakdown.hasGatedAccess ? "Yes" : "No"}</dd></div>
+                    <div><dt className="text-xs text-[var(--muted-foreground)]">Active / required CCTV</dt><dd className="font-medium">{listingDetail.safetyBreakdown.cctvActive == null ? "Not recorded" : `${listingDetail.safetyBreakdown.cctvActive} / ${listingDetail.safetyBreakdown.cctvRequired}`}</dd></div>
+                  </dl>
+                ) : <p className="mt-2 text-sm text-[var(--muted-foreground)]">No inspection has been recorded for this listing.</p>}
+              </section>
             </div>
-          </div>
-          <div className="flex justify-end gap-3">
-            <button
-              onClick={() => setRoommateView("list")}
-              className="rounded-xl border border-[var(--border)] px-4 py-2.5 text-sm font-medium"
-            >
-              Decline
-            </button>
-            <button
-              onClick={() => {
-                setRoommateNotice("Paolo Ramos was accepted as Mark's roommate.");
-                setRoommateView("list");
-              }}
-              className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white"
-            >
-              Accept Vouched Roommate
-            </button>
+            <div className="flex justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <button type="button" onClick={() => setListingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+              <button type="button" onClick={() => { setListingDetail(null); setActiveTab("calendar"); setSelectedCalendarPropertyId(listingDetail.id); setSelectedRoom("all"); }} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white">Open calendar</button>
+            </div>
           </div>
         </div>
       )}
 
-      {roommateNotice && (
-        <div className="fixed right-4 top-4 z-[60] w-[min(21.25rem,calc(100vw-2rem))] rounded-xl border border-[var(--primary)] bg-[var(--card)] px-4 py-3 shadow-xl animate-[admin-toast-in_180ms_ease-out]">
+      {bookingNotice && (
+        <div className="fixed right-4 top-4 z-[60] w-[min(22.5rem,calc(100vw-2rem))] rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 shadow-xl" role="status">
           <div className="flex gap-3">
-            <span className="mt-1 h-2.5 w-2.5 rounded-full bg-[var(--primary)]" />
+            <span className={`mt-1 h-2 w-2 flex-shrink-0 rounded-full ${bookingNotice.error ? "bg-red-500" : "bg-emerald-500"}`} />
             <div className="flex-1">
-              <div className="text-sm font-semibold">Roommate request updated</div>
-              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{roommateNotice}</p>
+              <div className="text-xs font-semibold">{bookingNotice.title}</div>
+              <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">{bookingNotice.message}</p>
             </div>
-            <button
-              onClick={() => setRoommateNotice(null)}
-              className="text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-              aria-label="Dismiss notification"
-            >
-              ×
-            </button>
+            <button type="button" onClick={() => setBookingNotice(null)} aria-label="Dismiss booking notification" className="text-[var(--muted-foreground)]">×</button>
           </div>
         </div>
       )}
@@ -840,165 +768,19 @@ export default function LandlordDashboard({onNavigate, onStartChat, displayName,
                 <div className="text-sm font-medium">{roomDetail.room.propertyTitle}</div>
               </div>
               <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Lease Dates</div>
-                <div className="text-sm font-medium">
-                  {roomDetail.booking
-                    ? `${roomDetail.booking.startDate} → ${roomDetail.booking.endDate}`
-                    : `${roomDetail.month} 2026`}
-                </div>
+                <div className="text-xs text-[var(--muted-foreground)]">Booking dates</div>
+                <div className="text-sm font-medium">{roomDetail.booking.startDate} → {roomDetail.booking.endDate}</div>
               </div>
               <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Status</div>
-                <div className="text-sm font-medium capitalize">{roomDetail.status === "occupied" ? "Confirmed" : roomDetail.status}</div>
+                <div className="text-xs text-[var(--muted-foreground)]">Booked by</div>
+                <div className="text-sm font-medium">{roomDetail.booking.studentName}</div>
               </div>
             </div>
-            <div className="flex gap-3 mt-6">
-              <button
-                onClick={() => {
-                  setRoomDetail(null);
-                  setCalendarScreen("lease");
-                }}
-                className="px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90"
-              >
-                View Lease
-              </button>
-              <button
-                onClick={() => {
-                  setRoomDetail(null);
-                  setActiveTab("listings");
-                }}
-                className="px-4 py-2.5 border border-[var(--border)] rounded-xl text-sm font-medium hover:bg-[var(--muted)]"
-              >
-                View Property
-              </button>
-            </div>
+            <button type="button" onClick={() => setRoomDetail(null)} className="mt-6 rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white">Close</button>
           </div>
         </div>
       )}
 
-      {activeTab === "calendar" && availabilityOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
-          <div
-            className="w-full max-w-md rounded-2xl border border-[var(--primary)] bg-[var(--card)] p-6 shadow-2xl"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="availability-title"
-          >
-            <h3 id="availability-title" className="font-display text-xl font-semibold mb-4">
-              Set Room Availability
-            </h3>
-            <div className="space-y-4">
-              <div>
-                <label htmlFor="availability-room" className="block text-xs text-[var(--muted-foreground)] mb-1.5">
-                  Room
-                </label>
-                <select
-                  id="availability-room"
-                  value={availabilityRoom}
-                  onChange={(event) => setAvailabilityRoom(event.target.value)}
-                  className="w-full h-10 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-medium outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                >
-                  {calendarRooms.map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.name} · {room.propertyTitle}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="availability-start" className="block text-xs text-[var(--muted-foreground)] mb-1.5">
-                  Start Month
-                </label>
-                <select
-                  id="availability-start"
-                  value={availabilityStart}
-                  onChange={(event) => setAvailabilityStart(event.target.value)}
-                  className="w-full h-10 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-medium outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                >
-                  <option value="">Select month</option>
-                  {MONTHS.map((month, index) => (
-                    <option key={month} value={index}>
-                      {month} 2026
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="availability-end" className="block text-xs text-[var(--muted-foreground)] mb-1.5">
-                  End Month
-                </label>
-                <select
-                  id="availability-end"
-                  value={availabilityEnd}
-                  onChange={(event) => setAvailabilityEnd(event.target.value)}
-                  className="w-full h-10 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-medium outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                >
-                  <option value="">Select month</option>
-                  {MONTHS.map((month, index) => (
-                    <option key={month} value={index}>
-                      {month} 2026
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label htmlFor="availability-status" className="block text-xs text-[var(--muted-foreground)] mb-1.5">
-                  Status
-                </label>
-                <select
-                  id="availability-status"
-                  value={availabilityStatus}
-                  onChange={(event) => setAvailabilityStatus(event.target.value)}
-                  className="w-full h-10 rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 text-sm font-medium uppercase outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                >
-                  <option value="available">AVAILABLE</option>
-                  <option value="reserved">RESERVED</option>
-                  <option value="occupied">OCCUPIED</option>
-                </select>
-              </div>
-              <p className="text-xs text-[var(--muted-foreground)]">Months covered by a confirmed lease cannot be overwritten here.</p>
-            </div>
-            <div className="flex justify-end gap-3 mt-4">
-              <button
-                onClick={() => setAvailabilityOpen(false)}
-                className="px-4 py-2.5 border border-[var(--border)] rounded-xl text-sm font-medium hover:bg-[var(--muted)]"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setAvailabilityOpen(false);
-                  const room = calendarRooms.find((item) => item.id === availabilityRoom);
-                  setCalendarToast(`${room?.name || "Room"} availability has been updated.`);
-                }}
-                disabled={!availabilityStart || !availabilityEnd || calendarRooms.length === 0}
-                className="px-4 py-2.5 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 disabled:opacity-40 disabled:cursor-not-allowed"
-              >
-                Save
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {calendarToast && (
-        <div className="fixed right-4 top-4 z-[60] w-[min(21.25rem,calc(100vw-2rem))] rounded-xl border border-[var(--primary)] bg-[var(--card)] px-4 py-3 shadow-xl animate-[admin-toast-in_180ms_ease-out]">
-          <div className="flex gap-3">
-            <span className="mt-1 h-2.5 w-2.5 flex-shrink-0 rounded-full bg-[var(--primary)]" />
-            <div className="flex-1">
-              <div className="text-sm font-semibold">Availability Updated</div>
-              <p className="text-xs text-[var(--muted-foreground)] mt-0.5">{calendarToast}</p>
-            </div>
-            <button
-              onClick={() => setCalendarToast(null)}
-              className="text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-              aria-label="Dismiss notification"
-            >
-              ×
-            </button>
-          </div>
-        </div>
-      )}
       {addOpen && <AddListingModal onClose={() => setAddOpen(false)} onCreated={reload} />}
     </div>
   );

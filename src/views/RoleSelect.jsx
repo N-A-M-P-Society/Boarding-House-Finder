@@ -65,7 +65,7 @@ export default function RoleSelect({ onNavigate }) {
             The verified off-campus housing platform for Ateneo de Davao University students and the landlords who serve them.
           </p>
           <div className="flex flex-wrap gap-3 text-sm">
-            {["120+ Verified Listings", "Safety Score Engine", "Roommate Matching"].map((feat) => (
+            {["Current listings", "Safety score details", "Direct landlord messaging"].map((feat) => (
               <span key={feat} className="flex items-center gap-1.5 text-white/60">
                 <span className="text-[var(--accent)]">✓</span> {feat}
               </span>

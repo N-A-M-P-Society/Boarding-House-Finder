@@ -2,7 +2,19 @@ import { useData } from "../context/DataContext.jsx";
 import PropertyCard from "../components/PropertyCard.jsx";
 export default function Landing({ onNavigate, onSelectProperty }) {
   const { properties: PROPERTIES } = useData();
-  const featured = PROPERTIES.filter((p) => p.status === "approved").slice(0, 3);
+  const approvedProperties = PROPERTIES.filter((p) => p.status === "approved");
+  const featured = approvedProperties.slice(0, 3);
+  const availableRoomCount = approvedProperties.reduce(
+    (count, property) => count + property.rooms.filter((room) => room.status === "available").length,
+    0,
+  );
+  const safetyScores = approvedProperties
+    .filter((property) => property.safetyScore != null)
+    .map((property) => Number(property.safetyScore))
+    .filter(Number.isFinite);
+  const averageSafetyScore = safetyScores.length
+    ? `${(safetyScores.reduce((total, score) => total + score, 0) / safetyScores.length).toFixed(1)}/10`
+    : "—";
   return (
     <div className="min-h-screen">
       {/* Hero */}
@@ -34,7 +46,7 @@ export default function Landing({ onNavigate, onSelectProperty }) {
               safe and verified.
             </h1>
             <p className="text-lg text-white/75 mb-8 max-w-xl leading-relaxed">
-              Browse ADDU-area listings with safety scores, roommate matching, and real-time chat — all in one platform built for students.
+              Browse ADDU-area listings with safety details, room availability, and direct messaging — all in one platform built for students.
             </p>
 
             {/* Search bar */}
@@ -56,7 +68,7 @@ export default function Landing({ onNavigate, onSelectProperty }) {
             </div>
 
             <div className="flex flex-wrap gap-4 mt-6 text-sm text-white/60">
-              {["₱2,800/mo budget rooms", "5-min walk listings", "Verified safe properties"].map((tag) => (
+              {["Compare monthly rent", "Check room availability", "Message landlords directly"].map((tag) => (
                 <span key={tag} className="flex items-center gap-1">
                   <span className="text-[var(--accent)]">✓</span> {tag}
                 </span>
@@ -68,12 +80,11 @@ export default function Landing({ onNavigate, onSelectProperty }) {
 
       {/* Stats strip */}
       <section className="bg-[var(--card)] border-b border-[var(--border)]">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-2 sm:grid-cols-4 gap-6">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 grid grid-cols-1 sm:grid-cols-3 gap-6">
           {[
-            { value: "120+", label: "Verified Listings" },
-            { value: "800m", label: "Walking Radius" },
-            { value: "4.8★", label: "Avg Safety Score" },
-            { value: "2,400+", label: "Students Housed" },
+            { value: approvedProperties.length, label: "Approved Listings" },
+            { value: availableRoomCount, label: "Available Rooms" },
+            { value: averageSafetyScore, label: "Average Safety Score" },
           ].map((stat) => (
             <div key={stat.label} className="text-center">
               <div className="font-display text-2xl font-semibold text-[var(--primary)]">{stat.value}</div>
@@ -88,7 +99,7 @@ export default function Landing({ onNavigate, onSelectProperty }) {
         <div className="flex items-end justify-between mb-8">
           <div>
             <h2 className="font-display text-3xl font-semibold">Featured listings</h2>
-            <p className="text-[var(--muted-foreground)] mt-1">Verified and safety-scored near ADDU</p>
+            <p className="text-[var(--muted-foreground)] mt-1">Approved listings with available safety details near ADDU</p>
           </div>
           <button
             onClick={() => onNavigate("listings")}
@@ -119,14 +130,14 @@ export default function Landing({ onNavigate, onSelectProperty }) {
             {[
               {
                 step: "01",
-                title: "Browse verified listings",
-                desc: "Filter by price, distance, safety score, and amenity badges. Every landlord is verified before going live.",
+                title: "Browse approved listings",
+                desc: "Filter by price, distance, safety score, and amenities, then review each listing's available details.",
                 icon: "🏠",
               },
               {
                 step: "02",
-                title: "Match with roommates",
-                desc: "Take a quick quiz on sleep habits, study style, and cleanliness. We surface the most compatible matches.",
+                title: "Save your roommate preferences",
+                desc: "Record your sleep, study, cleanliness, and guest preferences in your student profile.",
                 icon: "🤝",
               },
               {
@@ -156,26 +167,18 @@ export default function Landing({ onNavigate, onSelectProperty }) {
             </div>
             <h2 className="font-display text-3xl font-semibold mb-4">Know how safe your future home is before you move in</h2>
             <p className="text-[var(--muted-foreground)] leading-relaxed mb-6">
-              Each listing gets a 0–10 Safety Score built from four weighted factors: police proximity, street lighting, gated access, and
-              CCTV coverage — configured by our admin team.
+              Where inspection data is available, a listing's 0–10 Safety Score reflects police proximity, street lighting, gated access, and CCTV coverage.
             </p>
             <div className="space-y-3">
-              {[
-                { label: "Police Post Proximity", value: 90, color: "#0B5E6F" },
-                { label: "Street Lighting", value: 85, color: "#2AABB8" },
-                { label: "Gated Access", value: 80, color: "#F4623A" },
-                { label: "CCTV Coverage", value: 82, color: "#6B7B72" },
-              ].map((item) => (
-                <div key={item.label}>
-                  <div className="flex justify-between text-sm mb-1">
-                    <span className="font-medium">{item.label}</span>
-                    <span className="text-[var(--muted-foreground)] font-mono text-xs">{item.value}%</span>
-                  </div>
-                  <div className="h-2 bg-[var(--muted)] rounded-full overflow-hidden">
-                    <div className="h-full rounded-full transition-all" style={{ width: `${item.value}%`, backgroundColor: item.color }} />
-                  </div>
+              {["Police post proximity", "Street lighting", "Gated access", "CCTV coverage"].map((factor) => (
+                <div key={factor} className="flex items-center gap-3 rounded-xl border border-[var(--border)] bg-[var(--card)] p-3 text-sm">
+                  <span className="text-[var(--primary)]">✓</span>
+                  <span className="font-medium">{factor}</span>
                 </div>
               ))}
+              <p className="text-xs text-[var(--muted-foreground)]">
+                Review each listing's inspection details; not every factor may have recorded data.
+              </p>
             </div>
           </div>
           <div className="relative">
@@ -186,11 +189,6 @@ export default function Landing({ onNavigate, onSelectProperty }) {
                 className="w-full h-full object-cover"
               />
             </div>
-            <div className="absolute -bottom-4 -left-4 bg-[var(--card)] border border-[var(--border)] rounded-xl p-4 shadow-lg">
-              <div className="text-xs text-[var(--muted-foreground)] mb-1 font-medium">Overall Score</div>
-              <div className="font-display text-3xl font-bold text-[var(--primary)]">8.4</div>
-              <div className="text-xs text-emerald-600 font-medium mt-0.5">✓ Vetted Safe</div>
-            </div>
           </div>
         </div>
       </section>
@@ -198,7 +196,7 @@ export default function Landing({ onNavigate, onSelectProperty }) {
       {/* CTA */}
       <section className="bg-[var(--primary)] text-white py-16 text-center">
         <h2 className="font-display text-3xl font-semibold mb-4">Ready to find your ADDU home?</h2>
-        <p className="text-white/70 mb-8 max-w-md mx-auto">Join 2,400+ students who found safe, affordable housing near campus.</p>
+        <p className="text-white/70 mb-8 max-w-md mx-auto">Browse current listings and connect directly with landlords near campus.</p>
         <div className="flex flex-col sm:flex-row gap-3 justify-center">
           <button
             onClick={() => onNavigate("listings")}

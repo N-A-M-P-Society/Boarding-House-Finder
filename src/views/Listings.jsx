@@ -9,7 +9,7 @@ function walkingColor(mins) {
 }
 export default function Listings({ onNavigate, onSelectProperty, comparedIds, onCompare, userRole, session }) {
   const [search, setSearch] = useState("");
-  const [maxRent, setMaxRent] = useState(15000);
+  const [maxRent, setMaxRent] = useState("15000");
   const [minSafety, setMinSafety] = useState(0);
   const [maxWalk, setMaxWalk] = useState(15);
   const [badgeFilter, setBadgeFilter] = useState([]);
@@ -22,7 +22,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
   const allBadges = Array.from(new Set(visibleProperties.flatMap((p) => p.badges)));
   const filtered = visibleProperties.filter((p) => p.status === "approved")
     .filter((p) => p.title.toLowerCase().includes(search.toLowerCase()) || p.address.toLowerCase().includes(search.toLowerCase()))
-    .filter((p) => p.monthlyRent <= maxRent)
+    .filter((p) => maxRent === "" || p.monthlyRent <= Number(maxRent))
     .filter((p) => p.safetyScore >= minSafety)
     .filter((p) => p.walkingMinutes <= maxWalk)
     .filter((p) => badgeFilter.every((b) => p.badges.includes(b)))
@@ -35,9 +35,9 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
     setBadgeFilter((prev) => (prev.includes(badge) ? prev.filter((b) => b !== badge) : [...prev, badge]));
   };
   return (
-    <div className="flex flex-col lg:flex-row h-screen overflow-hidden">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden lg:flex-row">
       {/* Sidebar filters */}
-      <aside className="w-full lg:w-72 xl:w-80 flex-shrink-0 overflow-y-auto bg-[var(--card)] border-b lg:border-b-0 lg:border-r border-[var(--border)] p-4 space-y-5">
+      <aside className="max-h-[34vh] w-full flex-shrink-0 space-y-4 overflow-y-auto border-b border-[var(--border)] bg-[var(--card)] p-4 lg:max-h-none lg:w-72 lg:space-y-5 lg:border-b-0 lg:border-r xl:w-80">
         {/* Search */}
         <div>
           <input
@@ -71,29 +71,26 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
 
         {/* Max rent */}
         <div>
-          <div className="flex justify-between items-center mb-2">
-            <label className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Max Rent</label>
-            <span className="font-mono text-sm font-medium text-[var(--primary)]">₱{maxRent.toLocaleString()}</span>
-          </div>
+          <label htmlFor="max-rent" className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+            Maximum Monthly Rent
+          </label>
           <input
-            type="range"
-            min={2000}
-            max={15000}
-            step={500}
+            id="max-rent"
+            type="number"
+            min="0"
+            step="500"
             value={maxRent}
-            onChange={(e) => setMaxRent(Number(e.target.value))}
-            className="w-full accent-[var(--primary)]"
+            onChange={(e) => setMaxRent(e.target.value)}
+            placeholder="No limit"
+            className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2.5 text-sm outline-none transition-all focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]"
           />
-          <div className="flex justify-between text-xs text-[var(--muted-foreground)] mt-1">
-            <span>₱2,000</span>
-            <span>₱15,000</span>
-          </div>
+          <p className="mt-1 text-[10px] text-[var(--muted-foreground)]">Enter any amount, or leave blank for no limit.</p>
         </div>
 
         {/* Min safety */}
         <div>
-          <div className="flex justify-between items-center mb-2">
-            <label className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Min Safety Score</label>
+          <div className="mb-2 flex items-center justify-between gap-2">
+            <label className="flex-1 text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">Minimum Safety Score (out of 10)</label>
             <span className="font-mono text-sm font-medium text-[var(--primary)]">{minSafety.toFixed(1)}</span>
           </div>
           <input
@@ -111,7 +108,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
         <div>
           <div className="flex justify-between items-center mb-2">
             <label className="text-xs font-semibold text-[var(--muted-foreground)] uppercase tracking-wider">Max Walk</label>
-            <span className="font-mono text-sm font-medium text-[var(--primary)]">{maxWalk} min</span>
+            <span className="font-mono text-sm font-medium text-[var(--primary)]">{maxWalk} min · {maxWalk * 80}m</span>
           </div>
           <input
             type="range"
@@ -144,21 +141,21 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
           </div>
         </div>
 
-        <div className="text-xs text-[var(--muted-foreground)] pt-2 border-t border-[var(--border)]">
+        <div className="border-t border-[var(--border)] pt-2 text-xs text-[var(--muted-foreground)]">
           {userRole === "landlord" ? "Your listings: " : ""}
           {filtered.length} listing{filtered.length !== 1 ? "s" : ""} found
         </div>
       </aside>
 
       {/* Main content: map + cards */}
-      <div className="flex-1 overflow-hidden flex flex-col lg:flex-row">
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         {/* Leaflet map */}
-        <div className="flex-1 relative min-h-64 lg:min-h-0">
+        <div className="relative h-[42%] min-h-48 flex-shrink-0 lg:h-auto lg:min-h-0 lg:flex-1">
           <LeafletMap
             properties={filtered}
             campus={campus}
             gates={gates}
-            radiusMeters={800}
+            radiusMeters={maxWalk * 80}
             activeId={activePin}
             onSelect={setActivePin}
             onViewDetails={(id) => {
@@ -168,7 +165,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
           />
 
           {/* Legend */}
-          <div className="absolute bottom-6 left-4 z-[500] bg-[var(--card)]/90 backdrop-blur-sm border border-[var(--border)] rounded-xl p-3 text-xs">
+          <div className="absolute bottom-3 left-3 z-[500] rounded-xl border border-[var(--border)] bg-[var(--card)]/90 p-2 text-[10px] backdrop-blur-sm sm:bottom-6 sm:left-4 sm:p-3 sm:text-xs">
             <div className="font-medium mb-2">Safety Score</div>
             <div className="flex flex-col gap-1">
               <div className="flex items-center gap-2">
@@ -182,13 +179,13 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
               </div>
             </div>
             <div className="mt-2 pt-2 border-t border-[var(--border)] text-[var(--muted-foreground)]">
-              <span className="text-[var(--accent)]">—</span> 800m walk radius
+              <span className="text-[var(--accent)]">—</span> {maxWalk * 80}m search radius
             </div>
           </div>
         </div>
 
         {/* Cards panel */}
-        <div className="w-full lg:w-80 xl:w-96 overflow-y-auto bg-[var(--background)] border-t lg:border-t-0 lg:border-l border-[var(--border)] p-3 space-y-3">
+        <div className="min-h-0 w-full flex-1 space-y-3 overflow-y-auto border-t border-[var(--border)] bg-[var(--background)] p-3 lg:max-h-none lg:w-80 lg:flex-none lg:border-l lg:border-t-0 xl:w-96">
           {loading ? (
             <div className="text-center py-12 text-sm text-[var(--muted-foreground)]">Loading listings…</div>
           ) : error ? (
@@ -213,7 +210,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
                   onNavigate("detail");
                 }}
                 isSelected={activePin === p.id}
-                onCompare={onCompare}
+                onCompare={userRole === "admin" ? undefined : onCompare}
                 inComparison={comparedIds.includes(p.id)}
               />
             ))
