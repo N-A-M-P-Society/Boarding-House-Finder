@@ -68,10 +68,26 @@ export async function uploadVerificationDocuments(files) {
   return uploadStorageFiles(files, PRIVATE_DOCUMENT_BUCKET, "verification", DOCUMENT_TYPES, 10 * 1024 * 1024, false);
 }
 
+export async function uploadPaymentProof(file) {
+  const [path] = await uploadStorageFiles([file], PRIVATE_DOCUMENT_BUCKET, "payments", DOCUMENT_TYPES, 10 * 1024 * 1024, false);
+  return path;
+}
+
 async function signedVerificationDocument(path) {
   if (!path) return null;
   if (/^https:\/\//i.test(path)) return path;
   if (!path.startsWith("verification/")) return null;
+
+  const { data, error } = await supabase.storage
+    .from(PRIVATE_DOCUMENT_BUCKET)
+    .createSignedUrl(path, 60 * 60);
+  fail(error);
+  return data.signedUrl;
+}
+
+export async function getPaymentProofUrl(path) {
+  if (!path) return null;
+  if (!path.startsWith("payments/")) throw new Error("Invalid payment proof path.");
 
   const { data, error } = await supabase.storage
     .from(PRIVATE_DOCUMENT_BUCKET)
@@ -693,6 +709,7 @@ export async function fetchBookings() {
         room_id,
         room_number,
         monthly_rate,
+        security_deposit,
         house_id,
         boarding_houses ( house_name )
       )
@@ -718,6 +735,7 @@ export async function fetchBookings() {
     propertyId: String(b.rooms?.house_id),
     propertyTitle: b.rooms?.boarding_houses?.house_name,
     monthlyRate: Number(b.rooms?.monthly_rate || 0),
+    securityDeposit: Number(b.rooms?.security_deposit || 0),
     startDate: b.start_date,
     endDate: b.end_date,
     actualEndDate: b.actual_end_date || null,
@@ -770,12 +788,42 @@ export async function completeBooking(bookingId, actualEndDate) {
 export async function fetchPayments() {
   const { data, error } = await supabase
     .from("payments")
-    .select("*")
+    .select(`
+      *,
+      bookings (
+        booking_id,
+        student_id,
+        start_date,
+        end_date,
+        students ( full_name ),
+        rooms (
+          room_number,
+          boarding_houses ( house_name, landlord_id )
+        )
+      )
+    `)
     .order("payment_date", { ascending: false });
 
   fail(error);
 
-  return data || [];
+  return (data || []).map((payment) => ({
+    id: String(payment.payment_id),
+    bookingId: String(payment.booking_id),
+    studentId: String(payment.bookings?.student_id),
+    studentName: payment.bookings?.students?.full_name || "Student",
+    propertyTitle: payment.bookings?.rooms?.boarding_houses?.house_name || "Property",
+    landlordId: String(payment.bookings?.rooms?.boarding_houses?.landlord_id || ""),
+    roomName: payment.bookings?.rooms?.room_number || "Room",
+    startDate: payment.bookings?.start_date || "",
+    endDate: payment.bookings?.end_date || "",
+    amount: Number(payment.amount),
+    paymentType: payment.payment_type,
+    paymentDate: payment.payment_date,
+    paymentMethod: payment.payment_method || "",
+    receiptPath: payment.receipt_url || "",
+    status: payment.verification_status,
+    rejectionReason: payment.rejection_reason || "",
+  }));
 }
 
 /*
@@ -797,20 +845,37 @@ export async function createPayment({
   amount,
   paymentType,
   paymentMethod,
-  receiptUrl
+  receiptFile
 }) {
-  const { error } = await supabase
+  const paymentAmount = Number(amount);
+  if (!Number.isFinite(paymentAmount) || paymentAmount <= 0) {
+    throw new Error("Enter a payment amount greater than zero.");
+  }
+  if (!receiptFile) throw new Error("Upload your payment receipt before submitting.");
+  const receiptPath = await uploadPaymentProof(receiptFile);
+  const { data, error } = await supabase
     .from("payments")
     .insert({
       booking_id: Number(bookingId),
-      amount,
+      amount: paymentAmount,
       payment_type: paymentType,
       payment_method: paymentMethod ?? null,
-      receipt_url: receiptUrl ?? null,
+      receipt_url: receiptPath,
       verification_status: "Pending"
-    });
+    })
+    .select("payment_id")
+    .single();
 
-  fail(error);
+  if (error) {
+    const { error: cleanupError } = await supabase.storage
+      .from(PRIVATE_DOCUMENT_BUCKET)
+      .remove([receiptPath]);
+    if (cleanupError) {
+      throw new Error(`${error.message} The uploaded receipt could not be cleaned up: ${cleanupError.message}`);
+    }
+    fail(error);
+  }
+  return String(data.payment_id);
 }
 
 /*
@@ -821,13 +886,27 @@ export async function createPayment({
   For example, an administrator may change a payment from
   "Pending" to "Approved" or "Rejected".
 */
-export async function setPaymentStatus(paymentId, status) {
-  const { error } = await supabase
+export async function setPaymentStatus(paymentId, status, rejectionReason = "") {
+  if (!["Verified", "Failed"].includes(status)) {
+    throw new Error("Choose whether to accept or reject this payment.");
+  }
+  if (status === "Failed" && !rejectionReason.trim()) {
+    throw new Error("Enter a reason for rejecting this payment.");
+  }
+
+  const { data, error } = await supabase
     .from("payments")
-    .update({ verification_status: status })
-    .eq("payment_id", paymentId);
+    .update({
+      verification_status: status,
+      rejection_reason: status === "Failed" ? rejectionReason.trim() : null,
+    })
+    .eq("payment_id", Number(paymentId))
+    .eq("verification_status", "Pending")
+    .select("payment_id")
+    .maybeSingle();
 
   fail(error);
+  if (!data) throw new Error("This payment has already been reviewed. Refresh the payment list.");
 }
 
 /*

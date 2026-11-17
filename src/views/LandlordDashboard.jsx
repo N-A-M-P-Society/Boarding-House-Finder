@@ -1,10 +1,14 @@
 import { useEffect, useState } from "react";
 import { useData } from "../context/DataContext.jsx";
+import { supabase } from "../lib/supabase.js";
 import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
 import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
 import {
   completeBooking,
   fetchBookings,
+  fetchPayments,
+  getPaymentProofUrl,
+  setPaymentStatus,
   setBookingStatus,
   updateLandlordProfile,
   updateHouse,
@@ -82,6 +86,10 @@ function AvailabilityCalendar({ rooms, bookings, onEvent }) {
 export default function LandlordDashboard({ onNavigate, displayName, session, onProfilePhotoChange }) {
   const { properties: PROPERTIES, reload } = useData();
   const [bookings, setBookings] = useState([]);
+  const [payments, setPayments] = useState([]);
+  const [paymentReviewReasons, setPaymentReviewReasons] = useState({});
+  const [paymentBusyId, setPaymentBusyId] = useState("");
+  const [paymentProofLinks, setPaymentProofLinks] = useState({});
   const [bookingSearch, setBookingSearch] = useState("");
   const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
   const [bookingDetail, setBookingDetail] = useState(null);
@@ -116,6 +124,45 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     } catch (error) {
       setBookingNotice({ title: "Bookings could not be loaded", message: error.message, error: true });
       return error.message;
+    }
+  }
+  async function refreshPayments() {
+    try {
+      setPayments(await fetchPayments());
+      return "";
+    } catch (error) {
+      setBookingNotice({ title: "Payments could not be loaded", message: error.message, error: true });
+      return error.message;
+    }
+  }
+  async function reviewPayment(payment, status) {
+    const reason = paymentReviewReasons[payment.id] || "";
+    if (status === "Failed" && !reason.trim()) {
+      setBookingNotice({ title: "Rejection reason required", message: "Explain why this payment could not be accepted.", error: true });
+      return;
+    }
+    setPaymentBusyId(payment.id);
+    try {
+      await setPaymentStatus(payment.id, status, reason);
+      const refreshError = await refreshPayments();
+      const action = status === "Verified" ? "accepted" : "rejected";
+      setBookingNotice({
+        title: `Payment ${action}`,
+        message: `${payment.studentName}'s ${payment.paymentType.toLowerCase()} payment for ${payment.propertyTitle} was ${action}.${refreshError ? ` Payment list could not be refreshed: ${refreshError}` : ""}`,
+        error: Boolean(refreshError),
+      });
+    } catch (error) {
+      setBookingNotice({ title: "Payment review failed", message: error.message, error: true });
+    } finally {
+      setPaymentBusyId("");
+    }
+  }
+  async function loadPaymentProof(payment) {
+    try {
+      const url = await getPaymentProofUrl(payment.receiptPath);
+      setPaymentProofLinks((current) => ({ ...current, [payment.id]: url }));
+    } catch (error) {
+      setBookingNotice({ title: "Receipt could not be opened", message: error.message, error: true });
     }
   }
   async function updateBookingStatus(booking, status) {
@@ -164,7 +211,21 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   }
   useEffect(() => {
     refreshBookings();
+    refreshPayments();
   }, [session?.landlordId]);
+  useEffect(() => {
+    if (!session?.accountId) return;
+    const channel = supabase
+      .channel(`landlord-payments-${session.accountId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, () => {
+        refreshPayments();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.accountId]);
   useEffect(() => {
     if (!session?.landlordId) return;
     fetchLatestLandlordVerification()
@@ -239,6 +300,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   const [roomDetail, setRoomDetail] = useState(null);
   const myProperties = PROPERTIES.filter((p) => p.landlordId === String(session?.landlordId));
   const myBookings = bookings.filter((booking) => myProperties.some((property) => property.id === booking.propertyId));
+  const myPayments = payments.filter((payment) => payment.landlordId === String(session?.landlordId));
   const selectedCalendarProperty = myProperties.find((property) => property.id === selectedCalendarPropertyId) || myProperties[0];
   const calendarRooms = selectedCalendarProperty
     ? selectedCalendarProperty.rooms.map((room) => ({ ...room, propertyTitle: selectedCalendarProperty.title }))
@@ -338,6 +400,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
         {[
           ["overview", "Overview"],
           ["listings", "My Listings"],
+          ["payments", "Payments"],
           ["calendar", "Calendar"],
           ["roommates", "Roommate Requests"],
         ].map(([tab, label]) => (
@@ -542,6 +605,64 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 </div>
               ))}
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeTab === "payments" && (
+        <div className="space-y-4">
+          <div>
+            <h2 className="font-display text-xl font-semibold">Payment Reviews</h2>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Review student-submitted payment details and private receipt proofs for your properties.</p>
+          </div>
+          <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+            <table className="w-full min-w-[70rem] text-sm">
+              <thead className="bg-[var(--muted)]"><tr>{["Student", "Property / room", "Payment", "Amount", "Method", "Date", "Receipt", "Status", "Review"].map((heading) => <th key={heading} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+              <PaginatedTableBody
+                rows={myPayments}
+                columns={9}
+                emptyMessage="No student payments have been submitted for your properties."
+                renderRow={(payment) => (
+                  <tr key={payment.id} className="align-top">
+                    <td className="px-3 py-3 font-medium">{payment.studentName}</td>
+                    <td className="px-3 py-3">{payment.propertyTitle} · {payment.roomName}</td>
+                    <td className="px-3 py-3">{payment.paymentType}</td>
+                    <td className="px-3 py-3">₱{payment.amount.toLocaleString()}</td>
+                    <td className="px-3 py-3">{payment.paymentMethod || "—"}</td>
+                    <td className="px-3 py-3 text-xs">{payment.paymentDate?.slice(0, 10) || "—"}</td>
+                    <td className="px-3 py-3">
+                      {paymentProofLinks[payment.id]
+                        ? <a href={paymentProofLinks[payment.id]} target="_blank" rel="noreferrer" className="font-semibold text-[var(--primary)] underline">Open proof</a>
+                        : <button type="button" onClick={() => loadPaymentProof(payment)} className="whitespace-nowrap rounded-lg bg-[var(--secondary)] px-2.5 py-1.5 text-xs font-semibold text-[var(--primary)]">View proof</button>}
+                    </td>
+                    <td className="px-3 py-3">
+                      <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${payment.status === "Verified" ? "bg-emerald-100 text-emerald-800" : payment.status === "Failed" ? "bg-red-100 text-red-800" : "bg-amber-100 text-amber-800"}`}>{payment.status}</span>
+                      {payment.rejectionReason && <p className="mt-1 max-w-36 text-xs text-red-700">{payment.rejectionReason}</p>}
+                    </td>
+                    <td className="px-3 py-3">
+                      {payment.status === "Pending" ? (
+                        <div className="min-w-40 space-y-2">
+                          <button type="button" onClick={() => reviewPayment(payment, "Verified")} disabled={paymentBusyId === payment.id} className="w-full rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
+                            {paymentBusyId === payment.id ? "Saving…" : "Accept"}
+                          </button>
+                          <textarea
+                            value={paymentReviewReasons[payment.id] || ""}
+                            onChange={(event) => setPaymentReviewReasons((current) => ({ ...current, [payment.id]: event.target.value }))}
+                            placeholder="Reason required to reject"
+                            aria-label={`Rejection reason for ${payment.studentName}'s payment`}
+                            rows={2}
+                            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-xs"
+                          />
+                          <button type="button" onClick={() => reviewPayment(payment, "Failed")} disabled={paymentBusyId === payment.id || !(paymentReviewReasons[payment.id] || "").trim()} className="w-full rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                            Reject payment
+                          </button>
+                        </div>
+                      ) : <span className="text-xs text-[var(--muted-foreground)]">Reviewed</span>}
+                    </td>
+                  </tr>
+                )}
+              />
+            </table>
           </div>
         </div>
       )}

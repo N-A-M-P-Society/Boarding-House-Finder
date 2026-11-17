@@ -226,7 +226,12 @@ CREATE TABLE payments (
     payment_date TIMESTAMPTZ DEFAULT NOW(),
     payment_method TEXT,
     verification_status payment_status NOT NULL DEFAULT 'Pending',
-    receipt_url TEXT
+    receipt_url TEXT,
+    rejection_reason TEXT,
+    CONSTRAINT valid_payment_rejection_reason CHECK (
+        (verification_status = 'Failed' AND NULLIF(BTRIM(rejection_reason), '') IS NOT NULL)
+        OR (verification_status <> 'Failed' AND rejection_reason IS NULL)
+    )
 );
 
 CREATE TABLE reviews (
@@ -481,7 +486,7 @@ $$;
 CREATE TRIGGER lock_booking_keys_trg BEFORE UPDATE ON bookings
 FOR EACH ROW EXECUTE FUNCTION public.lock_booking_keys();
 
--- G. Landlords may only change a payment's verification_status (not amount, receipt, etc.)
+-- G. Landlords may review payment status/reason but cannot alter submitted details.
 CREATE OR REPLACE FUNCTION public.protect_payment_fields()
 RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
 BEGIN
@@ -493,7 +498,14 @@ BEGIN
         OR NEW.payment_date   IS DISTINCT FROM OLD.payment_date
         OR NEW.payment_method IS DISTINCT FROM OLD.payment_method
         OR NEW.receipt_url    IS DISTINCT FROM OLD.receipt_url) THEN
-        RAISE EXCEPTION 'Only the verification status of a payment can be changed.';
+        RAISE EXCEPTION 'Payment details cannot be changed after submission.';
+    END IF;
+    IF NEW.verification_status = 'Failed'
+       AND NULLIF(BTRIM(NEW.rejection_reason), '') IS NULL THEN
+        RAISE EXCEPTION 'A rejection reason is required.';
+    END IF;
+    IF NEW.verification_status <> 'Failed' AND NEW.rejection_reason IS NOT NULL THEN
+        RAISE EXCEPTION 'A rejection reason is only allowed for a rejected payment.';
     END IF;
     RETURN NEW;
 END;
@@ -595,10 +607,29 @@ CREATE POLICY staff_select_invoices ON invoices FOR SELECT USING (is_staff());
 -- 6.7 Payments
 CREATE POLICY student_select_payments ON payments FOR SELECT USING (booking_id IN (SELECT booking_id FROM bookings WHERE student_id = auth_student_id()));
 CREATE POLICY student_insert_payments ON payments FOR INSERT WITH CHECK (
-    booking_id IN (SELECT booking_id FROM bookings WHERE student_id = auth_student_id()) AND verification_status = 'Pending'
+    booking_id IN (
+        SELECT booking_id FROM bookings
+        WHERE student_id = auth_student_id() AND status = 'Confirmed'
+    )
+    AND verification_status = 'Pending'
+    AND payment_type IN ('Monthly rent', 'Security deposit')
+    AND amount > 0
+    AND receipt_url LIKE ('payments/' || auth.uid()::TEXT || '/%')
 );
 CREATE POLICY landlord_select_payments ON payments FOR SELECT USING (booking_id IN (SELECT my_booking_ids()));
-CREATE POLICY landlord_update_payments ON payments FOR UPDATE USING (booking_id IN (SELECT my_booking_ids())) WITH CHECK (booking_id IN (SELECT my_booking_ids()));
+CREATE POLICY landlord_update_payments ON payments FOR UPDATE
+USING (
+    verification_status = 'Pending'
+    AND booking_id IN (SELECT my_booking_ids())
+)
+WITH CHECK (
+    booking_id IN (SELECT my_booking_ids())
+    AND verification_status IN ('Verified', 'Failed')
+    AND (
+        (verification_status = 'Verified' AND rejection_reason IS NULL)
+        OR (verification_status = 'Failed' AND NULLIF(BTRIM(rejection_reason), '') IS NOT NULL)
+    )
+);
 
 -- 6.8 Saved listings & comparisons
 CREATE POLICY student_manage_saved_listings ON saved_listings FOR ALL USING (student_id = auth_student_id()) WITH CHECK (student_id = auth_student_id());
@@ -690,6 +721,10 @@ REVOKE ALL ON FUNCTION public.create_staff_user(TEXT, TEXT, TEXT, TEXT) FROM PUB
 -- Realtime listing updates allow clients to refresh safety scores immediately.
 DO $$ BEGIN
     ALTER PUBLICATION supabase_realtime ADD TABLE public.boarding_houses;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+    ALTER PUBLICATION supabase_realtime ADD TABLE public.payments;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 -- ==============================================================================

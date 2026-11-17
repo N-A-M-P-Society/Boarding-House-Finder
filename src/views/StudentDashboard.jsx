@@ -1,9 +1,18 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PropertyCard from "../components/PropertyCard.jsx";
 import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
 import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
 import { useData } from "../context/DataContext.jsx";
-import { fetchSavedHouseIds, fetchBookings, setBookingStatus, updateStudentProfile, sendMessage } from "../lib/api.js";
+import { supabase } from "../lib/supabase.js";
+import {
+  createPayment,
+  fetchBookings,
+  fetchPayments,
+  fetchSavedHouseIds,
+  sendMessage,
+  setBookingStatus,
+  updateStudentProfile,
+} from "../lib/api.js";
 // Quiz answer -> students.pref_* integer columns (see sql_script.txt)
 const PREF_MAP = {
   sleep: { early: 1, flexible: 2, "night-owl": 3 },
@@ -22,6 +31,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       : "bg-[var(--muted)] text-[var(--muted-foreground)]";
   const [savedIds, setSavedIds] = useState([]);
   const [bookings, setBookings] = useState([]);
+  const [payments, setPayments] = useState([]);
   const [bookingSearch, setBookingSearch] = useState("");
   const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
   const [savedSearch, setSavedSearch] = useState("");
@@ -29,11 +39,24 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   const [bookingDetail, setBookingDetail] = useState(null);
   const [dashboardNotice, setDashboardNotice] = useState(null);
   const [requestBusy, setRequestBusy] = useState(false);
+  const [paymentBookingId, setPaymentBookingId] = useState("");
+  const [paymentType, setPaymentType] = useState("Monthly rent");
+  const [paymentAmount, setPaymentAmount] = useState("");
+  const [paymentMethod, setPaymentMethod] = useState("Bank transfer");
+  const [paymentReceipt, setPaymentReceipt] = useState(null);
+  const [paymentBusy, setPaymentBusy] = useState(false);
+  const paymentReceiptInput = useRef(null);
   async function refreshMine() {
     if (!session?.studentId) return;
     try {
-      setSavedIds(await fetchSavedHouseIds(session.studentId));
-      setBookings(await fetchBookings());
+      const [savedHouseIds, bookingRows, paymentRows] = await Promise.all([
+        fetchSavedHouseIds(session.studentId),
+        fetchBookings(),
+        fetchPayments(),
+      ]);
+      setSavedIds(savedHouseIds);
+      setBookings(bookingRows);
+      setPayments(paymentRows);
     } catch (error) {
       setDashboardNotice({ title: "Dashboard data could not be loaded", message: error.message, error: true });
     }
@@ -52,6 +75,37 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
     refreshMine();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.studentId]);
+  useEffect(() => {
+    if (!session?.accountId) return;
+    const channel = supabase
+      .channel(`student-payments-${session.accountId}`)
+      .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, () => {
+        refreshMine();
+      })
+      .subscribe();
+    return () => {
+      supabase.removeChannel(channel);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.accountId]);
+  const payableBookings = bookings.filter((booking) => booking.status === "Confirmed");
+  const selectedPaymentBooking = payableBookings.find((booking) => booking.id === paymentBookingId);
+  useEffect(() => {
+    if (!payableBookings.length) {
+      setPaymentBookingId("");
+    } else if (!payableBookings.some((booking) => booking.id === paymentBookingId)) {
+      setPaymentBookingId(payableBookings[0].id);
+    }
+  }, [bookings, paymentBookingId]);
+  useEffect(() => {
+    if (!selectedPaymentBooking) {
+      setPaymentAmount("");
+      return;
+    }
+    setPaymentAmount(String(paymentType === "Monthly rent"
+      ? selectedPaymentBooking.monthlyRate
+      : selectedPaymentBooking.securityDeposit || ""));
+  }, [paymentBookingId, paymentType, bookings]);
   const [activeTab, setActiveTab] = useState("overview");
   const [quizStep, setQuizStep] = useState(0);
   const [quizAnswers, setQuizAnswers] = useState({});
@@ -170,6 +224,31 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       setRequestBusy(false);
     }
   }
+  async function submitPayment(event) {
+    event.preventDefault();
+    if (!selectedPaymentBooking || !paymentReceipt) {
+      setDashboardNotice({ title: "Payment details required", message: "Choose a confirmed booking and attach your payment proof.", error: true });
+      return;
+    }
+    setPaymentBusy(true);
+    try {
+      await createPayment({
+        bookingId: selectedPaymentBooking.id,
+        amount: paymentAmount,
+        paymentType,
+        paymentMethod,
+        receiptFile: paymentReceipt,
+      });
+      setPaymentReceipt(null);
+      if (paymentReceiptInput.current) paymentReceiptInput.current.value = "";
+      setDashboardNotice({ title: "Payment submitted", message: "Your landlord can now review your payment and receipt.", error: false });
+      await refreshMine();
+    } catch (error) {
+      setDashboardNotice({ title: "Payment could not be submitted", message: error.message, error: true });
+    } finally {
+      setPaymentBusy(false);
+    }
+  }
   function genderLabel(g) {
     if (g === "Female") return "♀ Female";
     if (g === "Male") return "♂ Male";
@@ -202,6 +281,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       <div className="flex gap-1 border-b border-[var(--border)] mb-8 overflow-x-auto">
         {[
           ["overview", "Overview"],
+          ["payments", "Payments"],
           ["roommates", "Roommate Requests"],
           ["saved", `Saved (${savedProperties.length})`],
           ["quiz", "Compatibility Quiz"],
@@ -316,6 +396,92 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
               Request Roommate →
             </button>
           </div>
+        </div>
+      )}
+
+      {activeTab === "payments" && (
+        <div className="space-y-6">
+          <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+            <div className="mb-4">
+              <h2 className="font-display text-xl font-semibold">Submit a payment</h2>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Submit proof of a monthly rent or security deposit payment for a confirmed booking. Your landlord will review it.</p>
+            </div>
+            {payableBookings.length === 0 ? (
+              <p className="rounded-xl bg-[var(--muted)] p-4 text-sm text-[var(--muted-foreground)]">You can submit a payment after a landlord confirms one of your bookings.</p>
+            ) : (
+              <form onSubmit={submitPayment} className="grid gap-4 sm:grid-cols-2">
+                <label className="text-xs font-semibold">
+                  Confirmed booking
+                  <select value={paymentBookingId} onChange={(event) => setPaymentBookingId(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal">
+                    {payableBookings.map((booking) => (
+                      <option key={booking.id} value={booking.id}>{booking.propertyTitle} · {booking.roomName}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold">
+                  Payment type
+                  <select value={paymentType} onChange={(event) => setPaymentType(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal">
+                    <option>Monthly rent</option>
+                    <option>Security deposit</option>
+                  </select>
+                </label>
+                <label className="text-xs font-semibold">
+                  Amount (₱)
+                  <input type="number" min="0.01" step="0.01" required value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal" />
+                </label>
+                <label className="text-xs font-semibold">
+                  Payment method
+                  <select value={paymentMethod} onChange={(event) => setPaymentMethod(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal">
+                    {["Bank transfer", "E-wallet", "Cash", "Other"].map((method) => <option key={method}>{method}</option>)}
+                  </select>
+                </label>
+                <label className="text-xs font-semibold sm:col-span-2">
+                  Receipt or payment proof (JPG, PNG, WebP, or PDF; max 10 MB)
+                  <input
+                    ref={paymentReceiptInput}
+                    type="file"
+                    accept="image/jpeg,image/png,image/webp,application/pdf"
+                    required
+                    onChange={(event) => setPaymentReceipt(event.target.files?.[0] || null)}
+                    className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm font-normal file:mr-3 file:rounded-lg file:border-0 file:bg-[var(--secondary)] file:px-3 file:py-1.5 file:text-xs file:font-semibold file:text-[var(--primary)]"
+                  />
+                </label>
+                <div className="sm:col-span-2">
+                  <button type="submit" disabled={paymentBusy || !paymentReceipt} className="rounded-xl bg-[var(--primary)] px-5 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
+                    {paymentBusy ? "Submitting payment…" : "Submit for landlord review"}
+                  </button>
+                </div>
+              </form>
+            )}
+          </section>
+
+          <section className="space-y-3">
+            <div>
+              <h2 className="font-display text-xl font-semibold">My payments</h2>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Payment submissions and landlord review decisions.</p>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+              <table className="w-full min-w-[48rem] text-sm">
+                <thead className="bg-[var(--muted)]"><tr>{["Property / room", "Type", "Amount", "Submitted", "Method", "Status", "Review note"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                <PaginatedTableBody
+                  rows={payments}
+                  columns={7}
+                  emptyMessage="No payments submitted yet."
+                  renderRow={(payment) => (
+                    <tr key={payment.id}>
+                      <td className="px-4 py-3 font-medium">{payment.propertyTitle} · {payment.roomName}</td>
+                      <td className="px-4 py-3">{payment.paymentType}</td>
+                      <td className="px-4 py-3">₱{payment.amount.toLocaleString()}</td>
+                      <td className="px-4 py-3 text-xs">{payment.paymentDate?.slice(0, 10) || "—"}</td>
+                      <td className="px-4 py-3">{payment.paymentMethod || "—"}</td>
+                      <td className="px-4 py-3"><span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-xs font-semibold text-[var(--primary)]">{payment.status}</span></td>
+                      <td className="px-4 py-3 text-xs text-red-700">{payment.rejectionReason || "—"}</td>
+                    </tr>
+                  )}
+                />
+              </table>
+            </div>
+          </section>
         </div>
       )}
 

@@ -27,6 +27,7 @@ Finding off-campus housing is stressful: listings are scattered across social me
 | 💬 **Real-time chat** between students and landlords with unread counts that clear when a conversation is opened | ✅ Live |
 | 📅 **Date-based room bookings** – database-backed availability calendars, overlapping requests blocked by the database, and landlord move-out dates that release rooms | ✅ Live |
 | 🧭 **Landlord calendar** – filter by property and room; click bookings to see the student and booking dates | ✅ Live |
+| 💸 **Manual payments** – students submit monthly rent or security-deposit details with private proof; landlords accept or reject with a reason | ✅ Live (no online payment gateway) |
 | ❤️ **Saved listings** and roommate-preference quiz (stored on the student profile) | ✅ Live |
 | ⭐ **Verified student reviews** – only students with a confirmed/completed booking can review; admins can hide abusive reviews | ✅ Live |
 | 🧾 **Admin audit log** of every moderation action | ✅ Live |
@@ -34,7 +35,6 @@ Finding off-campus housing is stressful: listings are scattered across social me
 | 🖼️ **Profile, listing, and room photos** with carousel keyboard controls | ✅ Live |
 | 📎 **Landlord verification documents** (private Supabase Storage) | ✅ Live |
 | 🤝 **Roommate matching and vouching** | 🧪 Not implemented; roommate inquiries continue in Messages |
-| 💳 **Automated payment verification** via Supabase Edge Functions & database webhooks | ✅ Live |
 
 ---
 
@@ -79,6 +79,7 @@ For a **new development project**, open Supabase → **SQL Editor** and run thes
    - a read policy so safety breakdowns of published houses are public
    - Supabase Storage buckets and policies for public photos and private verification documents
    - booking vacancy dates and a privacy-safe RPC for published room availability
+   - payment rejection reasons, student/landlord payment policies, private receipt access, and Realtime payment updates
    - a starter ADDU campus gate (**replace with your real gate coordinates**)
    - Realtime enabled for `messages` and `boarding_houses` so messages and listing score changes update live
 
@@ -126,8 +127,8 @@ For a production build: `npm run build && npm start`.
 
 | Role | How they sign up | What they can do |
 |---|---|---|
-| **Student** | Self-register with an `@addu.edu.ph` email | Browse the map, save and compare listings, request bookings, chat, review stayed-at houses |
-| **Landlord** | Self-register with any email | Add listings and rooms (start as *Pending*), confirm/decline bookings, chat |
+| **Student** | Self-register with an `@addu.edu.ph` email | Browse the map, save and compare listings, request bookings, submit payment proof for confirmed bookings, chat, review stayed-at houses |
+| **Landlord** | Self-register with any email | Add listings and rooms (start as *Pending*), confirm/decline bookings, review and accept/reject submitted payments, chat |
 | **Admin** | Created via `create_staff_user` | Approve/reject/suspend listings, verify landlords, moderate reviews, grant badges, record safety inspections, read the audit log |
 | **SuperAdmin** | Created via `create_staff_user` | Everything an Admin can do, plus edit safety-score weights and campus gates |
 
@@ -147,6 +148,13 @@ Security is enforced in the database through RLS and triggers (`supabase_schema.
 - Students select check-in and check-out dates; a pending request reserves those dates while the landlord reviews it.
 - The database prevents overlapping pending or confirmed bookings. Public calendars show date status only, not the tenant’s name.
 - Landlords can filter their calendar by property and room, open a booking to view who booked it, and record a move-out date. The move-out date is the first day the room can be booked again.
+
+## 💸 How manual payments work
+
+- After a booking is confirmed, students can submit a monthly rent or security-deposit amount, payment method, and receipt/proof file (JPG, PNG, WebP, or PDF; up to 10 MB).
+- Proof files are stored in the private `unirent-verification` bucket. The related student and property landlord receive short-lived signed links to view the proof.
+- Landlords review submissions in **Dashboard → Payments**, then accept them or reject them with a reason. The student's payment status updates in real time.
+- This is a manual proof-and-review workflow; no online payment gateway is connected.
 
 ---
 

@@ -36,6 +36,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS students_id_number_key
   ON public.students (student_id_number) WHERE student_id_number IS NOT NULL;
 
 ALTER TABLE public.bookings ADD COLUMN IF NOT EXISTS actual_end_date DATE;
+ALTER TABLE public.payments ADD COLUMN IF NOT EXISTS rejection_reason TEXT;
 DO $$
 BEGIN
   IF NOT EXISTS (
@@ -47,6 +48,23 @@ BEGIN
     ALTER TABLE public.bookings
       ADD CONSTRAINT valid_actual_booking_end_date
       CHECK (actual_end_date IS NULL OR actual_end_date >= start_date);
+  END IF;
+END $$;
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'valid_payment_rejection_reason'
+      AND conrelid = 'public.payments'::regclass
+  ) THEN
+    ALTER TABLE public.payments
+      ADD CONSTRAINT valid_payment_rejection_reason
+      CHECK (
+        (verification_status = 'Failed' AND NULLIF(BTRIM(rejection_reason), '') IS NOT NULL)
+        OR (verification_status <> 'Failed' AND rejection_reason IS NULL)
+      ) NOT VALID;
   END IF;
 END $$;
 
@@ -119,6 +137,58 @@ CREATE POLICY landlord_update_bookings ON public.bookings FOR UPDATE
       OR (actual_end_date IS NOT NULL AND actual_end_date >= start_date AND actual_end_date <= CURRENT_DATE)
     )
   );
+
+DROP POLICY IF EXISTS student_insert_payments ON public.payments;
+CREATE POLICY student_insert_payments ON public.payments FOR INSERT WITH CHECK (
+  booking_id IN (
+    SELECT booking_id FROM public.bookings
+    WHERE student_id = public.auth_student_id() AND status = 'Confirmed'
+  )
+  AND verification_status = 'Pending'
+  AND payment_type IN ('Monthly rent', 'Security deposit')
+  AND amount > 0
+  AND receipt_url LIKE ('payments/' || auth.uid()::TEXT || '/%')
+);
+
+DROP POLICY IF EXISTS landlord_update_payments ON public.payments;
+CREATE POLICY landlord_update_payments ON public.payments FOR UPDATE
+USING (
+  verification_status = 'Pending'
+  AND booking_id IN (SELECT public.my_booking_ids())
+)
+WITH CHECK (
+  booking_id IN (SELECT public.my_booking_ids())
+  AND verification_status IN ('Verified', 'Failed')
+  AND (
+    (verification_status = 'Verified' AND rejection_reason IS NULL)
+    OR (verification_status = 'Failed' AND NULLIF(BTRIM(rejection_reason), '') IS NOT NULL)
+  )
+);
+
+CREATE OR REPLACE FUNCTION public.protect_payment_fields()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+  IF auth.uid() IS NOT NULL AND (
+       NEW.booking_id IS DISTINCT FROM OLD.booking_id
+    OR NEW.invoice_id IS DISTINCT FROM OLD.invoice_id
+    OR NEW.amount IS DISTINCT FROM OLD.amount
+    OR NEW.payment_type IS DISTINCT FROM OLD.payment_type
+    OR NEW.payment_date IS DISTINCT FROM OLD.payment_date
+    OR NEW.payment_method IS DISTINCT FROM OLD.payment_method
+    OR NEW.receipt_url IS DISTINCT FROM OLD.receipt_url
+  ) THEN
+    RAISE EXCEPTION 'Payment details cannot be changed after submission.';
+  END IF;
+  IF NEW.verification_status = 'Failed'
+     AND NULLIF(BTRIM(NEW.rejection_reason), '') IS NULL THEN
+    RAISE EXCEPTION 'A rejection reason is required.';
+  END IF;
+  IF NEW.verification_status <> 'Failed' AND NEW.rejection_reason IS NOT NULL THEN
+    RAISE EXCEPTION 'A rejection reason is only allowed for a rejected payment.';
+  END IF;
+  RETURN NEW;
+END;
+$$;
 
 CREATE OR REPLACE FUNCTION public.get_public_room_bookings(p_house_id BIGINT)
 RETURNS TABLE (room_id BIGINT, start_date DATE, end_date DATE, status TEXT)
@@ -267,9 +337,35 @@ CREATE POLICY unirent_verification_owner_or_staff_read ON storage.objects
     AND (
       (
         (storage.foldername(name))[2] = auth.uid()::TEXT
+        AND (storage.foldername(name))[1] = 'verification'
         AND public.auth_user_role() = 'Landlord'
       )
       OR public.is_staff()
+      OR (
+        (storage.foldername(name))[1] = 'payments'
+        AND (storage.foldername(name))[2] = auth.uid()::TEXT
+        AND public.auth_user_role() = 'Student'
+        AND EXISTS (
+          SELECT 1
+          FROM public.payments p
+          JOIN public.bookings b ON b.booking_id = p.booking_id
+          WHERE p.receipt_url = storage.objects.name
+            AND b.student_id = public.auth_student_id()
+        )
+      )
+      OR (
+        (storage.foldername(name))[1] = 'payments'
+        AND public.auth_user_role() = 'Landlord'
+        AND EXISTS (
+          SELECT 1
+          FROM public.payments p
+          JOIN public.bookings b ON b.booking_id = p.booking_id
+          JOIN public.rooms r ON r.room_id = b.room_id
+          JOIN public.boarding_houses h ON h.house_id = r.house_id
+          WHERE p.receipt_url = storage.objects.name
+            AND h.landlord_id = public.auth_landlord_id()
+        )
+      )
     )
   );
 
@@ -279,7 +375,10 @@ CREATE POLICY unirent_verification_owner_insert ON storage.objects
   WITH CHECK (
     bucket_id = 'unirent-verification'
     AND (storage.foldername(name))[2] = auth.uid()::TEXT
-    AND public.auth_user_role() = 'Landlord'
+    AND (
+      ((storage.foldername(name))[1] = 'verification' AND public.auth_user_role() = 'Landlord')
+      OR ((storage.foldername(name))[1] = 'payments' AND public.auth_user_role() = 'Student')
+    )
   );
 
 DROP POLICY IF EXISTS unirent_verification_owner_update ON storage.objects;
@@ -302,7 +401,17 @@ CREATE POLICY unirent_verification_owner_delete ON storage.objects
   USING (
     bucket_id = 'unirent-verification'
     AND (storage.foldername(name))[2] = auth.uid()::TEXT
-    AND public.auth_user_role() = 'Landlord'
+    AND (
+      ((storage.foldername(name))[1] = 'verification' AND public.auth_user_role() = 'Landlord')
+      OR (
+        (storage.foldername(name))[1] = 'payments'
+        AND public.auth_user_role() = 'Student'
+        AND NOT EXISTS (
+          SELECT 1 FROM public.payments p
+          WHERE p.receipt_url = storage.objects.name
+        )
+      )
+    )
   );
 
 -- 5. Campus gates for the Leaflet map + walking-distance calculation (ADDU Jacinto - adjust to your survey)
@@ -318,6 +427,11 @@ EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 -- Realtime listing updates so students see recalculated safety scores without reloading.
 DO $$ BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE public.boarding_houses;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Realtime payment changes update student statuses and landlord review queues.
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.payments;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 NOTIFY pgrst, 'reload schema';
