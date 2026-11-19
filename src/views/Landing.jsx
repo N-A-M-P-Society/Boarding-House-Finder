@@ -117,6 +117,7 @@ export default function Landing({ onNavigate, onSelectProperty }) {
                 onSelectProperty(p.id);
                 onNavigate("detail");
               }}
+              imageClickNavigates
             />
           ))}
         </div>

@@ -1,7 +1,7 @@
 import { useState } from "react";
 import Logo from "../components/Logo.jsx";
 import { supabase } from "../lib/supabase.js";
-import { signIn, signOut, loadProfile } from "../lib/api.js";
+import { GENERIC_ERROR_MESSAGE, requestPasswordReset, signIn, signOut, loadProfile } from "../lib/api.js";
 const CONFIG = {
   student: {
     icon: "🎓",
@@ -28,7 +28,7 @@ const CONFIG = {
   admin: {
     icon: "⚙️",
     label: "Admin",
-    emailPlaceholder: "admin@unirents.ph",
+    emailPlaceholder: "Email Address",
     emailHint: "Admin accounts are invite-only",
     accentClass: "bg-purple-700 hover:bg-purple-800",
     ringClass: "focus:ring-purple-400",
@@ -43,15 +43,10 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
   const [password, setPassword] = useState("");
   const [mfaCode, setMfaCode] = useState("");
   const [showMfa, setShowMfa] = useState(false);
+  const [forgotPassword, setForgotPassword] = useState(false);
+  const [resetEmailSent, setResetEmailSent] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
-  const displayName = email
-    .split("@")[0]
-    .trim()
-    .split(/[._-]+/)
-    .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(" ");
   // Confirm the account really belongs to the portal that was chosen.
   async function finishLogin() {
     const profile = await loadProfile();
@@ -77,13 +72,13 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
     try {
       if (role === "admin" && showMfa) {
         const { data: factors, error: fErr } = await supabase.auth.mfa.listFactors();
-        if (fErr) throw fErr;
+        if (fErr) throw new Error(GENERIC_ERROR_MESSAGE);
         const factor = factors?.totp?.[0];
         if (!factor) throw new Error("No authenticator is enrolled for this account.");
         const { data: ch, error: cErr } = await supabase.auth.mfa.challenge({ factorId: factor.id });
-        if (cErr) throw cErr;
+        if (cErr) throw new Error(GENERIC_ERROR_MESSAGE);
         const { error: vErr } = await supabase.auth.mfa.verify({ factorId: factor.id, challengeId: ch.id, code: mfaCode });
-        if (vErr) throw vErr;
+        if (vErr) throw new Error(GENERIC_ERROR_MESSAGE);
         await finishLogin();
         return;
       }
@@ -99,6 +94,28 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
       await finishLogin();
     } catch (err) {
       setError(err.message || "Sign in failed.");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function handleForgotPassword(e) {
+    e.preventDefault();
+    if (!email.trim()) {
+      setError("Enter your email address.");
+      return;
+    }
+    if (role === "student" && !email.trim().toLowerCase().endsWith("@addu.edu.ph")) {
+      setError("Students must use an @addu.edu.ph institutional email.");
+      return;
+    }
+    setError("");
+    setLoading(true);
+    try {
+      await requestPasswordReset(email, window.location.origin);
+      setResetEmailSent(true);
+    } catch (err) {
+      setError(err.message || GENERIC_ERROR_MESSAGE);
     } finally {
       setLoading(false);
     }
@@ -169,10 +186,70 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
             {cfg.icon} {cfg.label} Login
           </div>
 
-          <h2 className="font-display text-3xl font-semibold mb-1">Sign in</h2>
-          <p className="text-[var(--muted-foreground)] text-sm mb-8">{cfg.emailHint}</p>
+          <h2 className="font-display text-3xl font-semibold mb-1">
+            {forgotPassword ? "Reset your password" : "Sign in"}
+          </h2>
+          <p className="text-[var(--muted-foreground)] text-sm mb-8">
+            {forgotPassword ? "Enter the email address linked to your account." : cfg.emailHint}
+          </p>
 
-          {!showMfa ? (
+          {forgotPassword ? (
+            resetEmailSent ? (
+              <div className="space-y-4">
+                <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-800" role="status">
+                  If an account exists for that email, password reset instructions will arrive shortly.
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotPassword(false);
+                    setResetEmailSent(false);
+                    setError("");
+                  }}
+                  className="w-full rounded-xl border border-[var(--border)] px-4 py-3 text-sm font-semibold text-[var(--foreground)] hover:bg-[var(--muted)]"
+                >
+                  Back to sign in
+                </button>
+              </div>
+            ) : (
+              <form onSubmit={handleForgotPassword} className="space-y-4">
+                <div>
+                  <label className="mb-1.5 block text-sm font-semibold">Email address</label>
+                  <input
+                    type="email"
+                    required
+                    value={email}
+                    onChange={(e) => setEmail(e.target.value)}
+                    placeholder={cfg.emailPlaceholder}
+                    autoComplete="email"
+                    className={`w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm outline-none transition-all focus:ring-2 ${cfg.ringClass}`}
+                  />
+                </div>
+                {error && (
+                  <div className="flex items-start gap-2 rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-700" role="alert">
+                    <span className="flex-shrink-0">⚠</span> {error}
+                  </div>
+                )}
+                <button
+                  type="submit"
+                  disabled={loading}
+                  className={`w-full rounded-xl py-3.5 text-sm font-semibold text-white transition-all disabled:opacity-60 ${cfg.accentClass}`}
+                >
+                  {loading ? "Sending reset link…" : "Send reset link"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setForgotPassword(false);
+                    setError("");
+                  }}
+                  className="w-full py-2 text-sm font-medium text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                >
+                  ← Back to sign in
+                </button>
+              </form>
+            )
+          ) : !showMfa ? (
             <form onSubmit={handleSubmit} className="space-y-4">
               <div>
                 <label className="block text-sm font-semibold mb-1.5">Email address</label>
@@ -183,9 +260,9 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
                   placeholder={cfg.emailPlaceholder}
                   className={`w-full px-4 py-3 rounded-xl border border-[var(--border)] bg-[var(--card)] text-sm outline-none focus:ring-2 transition-all ${cfg.ringClass}`}
                 />
-                {displayName && (
+                {email.trim() && (
                   <p className="mt-1.5 text-xs text-[var(--muted-foreground)]">
-                    You will appear as <span className="font-semibold text-[var(--foreground)]">{displayName}</span>.
+                    Your registered profile name will appear to other users after you sign in.
                   </p>
                 )}
               </div>
@@ -193,7 +270,15 @@ export default function LoginPage({ role, onBack, onLogin, onSignup }) {
               <div>
                 <div className="flex justify-between items-center mb-1.5">
                   <label className="block text-sm font-semibold">Password</label>
-                  <button type="button" className="text-xs text-[var(--primary)] hover:underline">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setForgotPassword(true);
+                      setResetEmailSent(false);
+                      setError("");
+                    }}
+                    className="text-xs text-[var(--primary)] hover:underline"
+                  >
                     Forgot password?
                   </button>
                 </div>

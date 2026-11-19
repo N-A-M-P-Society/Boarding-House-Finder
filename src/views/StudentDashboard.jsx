@@ -2,18 +2,24 @@ import { useEffect, useRef, useState } from "react";
 import PropertyCard from "../components/PropertyCard.jsx";
 import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
 import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
+import DashboardHeader from "../components/DashboardHeader.jsx";
+import DashboardTabBar from "../components/DashboardTabBar.jsx";
 import { useData } from "../context/DataContext.jsx";
 import { supabase } from "../lib/supabase.js";
 import {
-  closeRoommateRequest,
+  chooseRoommateMatchCandidate,
+  closeRoommateMatchRequest,
   createPayment,
-  createRoommateRequest,
+  createRoommateMatchRequest,
   fetchBookings,
+  fetchMyInvoiceBalances,
+  fetchMyRoommateMatchCandidates,
+  fetchMyRoommateMatchRequest,
+  fetchMySharedBookingInvites,
   fetchPayments,
-  fetchRoommateRequests,
   fetchSavedHouseIds,
   renewBooking,
-  sendMessage,
+  respondToSharedBookingInvite,
   studentMoveOutBooking,
   setBookingStatus,
   updateStudentProfile,
@@ -27,7 +33,7 @@ const PREF_MAP = {
 const ROOMMATE_PREFERENCE_LABELS = {
   sleep: { 1: "Early sleeper", 2: "Flexible sleep schedule", 3: "Night owl" },
   study: { 1: "Quiet study", 2: "Background music", 3: "Group study" },
-  cleanliness: { 1: "Very clean", 2: "Very clean", 3: "Generally tidy", 4: "Generally tidy", 5: "Organized chaos" },
+  cleanliness: { 1: "Very clean", 2: "Very clean", 3: "Organized chaos", 4: "Generally tidy", 5: "Spotless" },
   guests: { 1: "No guests", 2: "Occasional guests", 3: "Frequent guests" },
 };
 function localDate(date) {
@@ -46,11 +52,23 @@ function roommatePreferenceSummary(preferences) {
 function cyclePromptKey(booking) {
   return `${booking.id}:${booking.endDate}`;
 }
+function studentBookingStartDate(booking, studentId) {
+  return booking.roommateStudentId === String(studentId)
+    ? booking.roommateStartDate || booking.startDate
+    : booking.startDate;
+}
 export default function StudentDashboard({ onNavigate, onStartChat, onSelectProperty, comparedIds, onCompare, displayName, session, onProfilePhotoChange, initialTab = "overview" }) {
   const { properties: PROPERTIES, reload } = useData();
   const studentProfile = session?.student ?? {};
   const gender = studentProfile.gender;
-  const genderText = gender === "Female" || gender === "Male" ? gender : "";
+  const [roommatePreferenceOverrides, setRoommatePreferenceOverrides] = useState(null);
+  const roommatePreferences = roommatePreferenceOverrides || {
+    sleep: studentProfile.pref_sleep_schedule,
+    study: studentProfile.pref_study_habits,
+    cleanliness: studentProfile.pref_cleanliness,
+    guests: studentProfile.pref_guest_policy,
+  };
+  const hasCompleteRoommatePreferences = Object.values(roommatePreferences).every((value) => value != null);
   const genderBadgeClass = gender === "Female"
     ? "bg-pink-100 text-pink-700"
     : gender === "Male"
@@ -59,7 +77,10 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   const [savedIds, setSavedIds] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
-  const [roommateRequests, setRoommateRequests] = useState([]);
+  const [invoiceBalances, setInvoiceBalances] = useState([]);
+  const [sharedBookingInvites, setSharedBookingInvites] = useState([]);
+  const [roommateMatchRequest, setRoommateMatchRequest] = useState(null);
+  const [roommateMatchCandidates, setRoommateMatchCandidates] = useState([]);
   const [bookingSearch, setBookingSearch] = useState("");
   const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
   const [savedSearch, setSavedSearch] = useState("");
@@ -70,9 +91,9 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   const [stayActionBusy, setStayActionBusy] = useState(false);
   const [dashboardNotice, setDashboardNotice] = useState(null);
   const [requestBusy, setRequestBusy] = useState(false);
-  const [shareRoommateRequest, setShareRoommateRequest] = useState(false);
+  const [bookingInviteBusyId, setBookingInviteBusyId] = useState("");
   const [paymentBookingId, setPaymentBookingId] = useState("");
-  const [paymentType, setPaymentType] = useState("Monthly rent");
+  const [paymentInvoiceId, setPaymentInvoiceId] = useState("");
   const [paymentAmount, setPaymentAmount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("Bank transfer");
   const [paymentReceipt, setPaymentReceipt] = useState(null);
@@ -81,16 +102,22 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   async function refreshMine() {
     if (!session?.studentId) return;
     try {
-      const [savedHouseIds, bookingRows, paymentRows, roommateRows] = await Promise.all([
+      const [savedHouseIds, bookingRows, paymentRows, invoiceRows, bookingInvites, matchRequest, matchCandidates] = await Promise.all([
         fetchSavedHouseIds(session.studentId),
         fetchBookings(),
         fetchPayments(),
-        fetchRoommateRequests(),
+        fetchMyInvoiceBalances(),
+        fetchMySharedBookingInvites(),
+        fetchMyRoommateMatchRequest(),
+        fetchMyRoommateMatchCandidates(),
       ]);
       setSavedIds(savedHouseIds);
       setBookings(bookingRows);
       setPayments(paymentRows);
-      setRoommateRequests(roommateRows);
+      setInvoiceBalances(invoiceRows);
+      setSharedBookingInvites(bookingInvites);
+      setRoommateMatchRequest(matchRequest);
+      setRoommateMatchCandidates(matchCandidates);
     } catch (error) {
       setDashboardNotice({ title: "Dashboard data could not be loaded", message: error.message, error: true });
     }
@@ -117,7 +144,6 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
         event: "*",
         schema: "public",
         table: "bookings",
-        filter: `student_id=eq.${session.studentId}`,
       }, () => {
         refreshMine();
       })
@@ -130,42 +156,55 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [session?.accountId]);
-  const payableBookings = bookings.filter((booking) => booking.status === "Confirmed");
+  const myBookings = bookings.filter((booking) =>
+    booking.studentId === String(session?.studentId) ||
+    (booking.roommateStudentId === String(session?.studentId) && booking.roommateInviteStatus === "Accepted")
+  );
+  const payableBookings = myBookings.filter((booking) =>
+    booking.status === "Confirmed" &&
+    invoiceBalances.some((invoice) => invoice.bookingId === booking.id && invoice.remainingBalance > 0)
+  );
   const selectedPaymentBooking = payableBookings.find((booking) => booking.id === paymentBookingId);
+  const payableInvoices = invoiceBalances.filter((invoice) =>
+    invoice.bookingId === paymentBookingId && invoice.remainingBalance > 0
+  );
+  const selectedPaymentInvoice = payableInvoices.find((invoice) => invoice.id === paymentInvoiceId);
   useEffect(() => {
     if (!payableBookings.length) {
       setPaymentBookingId("");
     } else if (!payableBookings.some((booking) => booking.id === paymentBookingId)) {
       setPaymentBookingId(payableBookings[0].id);
     }
-  }, [bookings, paymentBookingId]);
+  }, [bookings, invoiceBalances, paymentBookingId]);
   useEffect(() => {
-    if (!selectedPaymentBooking) {
+    if (!payableInvoices.length) {
+      setPaymentInvoiceId("");
+    } else if (!payableInvoices.some((invoice) => invoice.id === paymentInvoiceId)) {
+      setPaymentInvoiceId(payableInvoices[0].id);
+    }
+  }, [payableInvoices, paymentInvoiceId]);
+  useEffect(() => {
+    if (!selectedPaymentInvoice) {
       setPaymentAmount("");
       return;
     }
-    setPaymentAmount(String(paymentType === "Monthly rent"
-      ? selectedPaymentBooking.monthlyRate
-      : selectedPaymentBooking.securityDeposit || ""));
-  }, [paymentBookingId, paymentType, bookings]);
+    setPaymentAmount(String(selectedPaymentInvoice.remainingBalance.toFixed(2)));
+  }, [paymentInvoiceId, invoiceBalances]);
   const [activeTab, setActiveTab] = useState(initialTab);
   const [quizStep, setQuizStep] = useState(0);
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizDone, setQuizDone] = useState(false);
-  // Roommate request form state
+  // Roommate matching request state
   const [requestStep, setRequestStep] = useState("list");
-  const [selectedPropertyId, setSelectedPropertyId] = useState("");
-  const [selectedRoomId, setSelectedRoomId] = useState("");
-  const [moveInDate, setMoveInDate] = useState("");
-  const [note, setNote] = useState("");
   const todayDate = localDate(new Date());
   const renewalWindowEnd = addDays(todayDate, 7);
-  const dueBookings = bookings.filter((booking) =>
+  const dueBookings = myBookings.filter((booking) =>
     booking.status === "Confirmed" &&
+    booking.studentId === String(session?.studentId) &&
     booking.startDate <= todayDate &&
     booking.endDate <= renewalWindowEnd
   );
-  const stayDecisionBooking = bookings.find((booking) => booking.id === stayDecisionBookingId);
+  const stayDecisionBooking = myBookings.find((booking) => booking.id === stayDecisionBookingId);
   const stayRenewalAvailable = stayDecisionBooking && stayDecisionBooking.endDate <= renewalWindowEnd;
   useEffect(() => {
     setActiveTab(initialTab);
@@ -183,7 +222,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       setStayDecisionBookingId(null);
       setBookingDetail(null);
       setPaymentBookingId(booking.id);
-      setPaymentType("Monthly rent");
+      setPaymentInvoiceId("");
       setActiveTab("payments");
       await refreshMine();
       setDashboardNotice({
@@ -217,12 +256,13 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
     }
   }
   const savedProperties = PROPERTIES.filter((p) => savedIds.includes(p.id));
-  const filteredBookings = bookings.filter((booking) => {
+  const filteredBookings = myBookings.filter((booking) => {
     const query = bookingSearch.trim().toLowerCase();
     const status = String(booking.status || "").toLowerCase();
     const matchesSearch = !query ||
       String(booking.propertyTitle || "").toLowerCase().includes(query) ||
       String(booking.roomName || "").toLowerCase().includes(query) ||
+      String(booking.roommateName || "").toLowerCase().includes(query) ||
       String(booking.status || "").toLowerCase().includes(query);
     return matchesSearch && (bookingStatusFilter === "all" || status === bookingStatusFilter);
   });
@@ -236,13 +276,6 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       (savedAvailabilityFilter === "available" ? availableRooms > 0 : availableRooms === 0);
     return matchesSearch && matchesAvailability;
   });
-  // Properties with available shared rooms
-  const sharedProperties = PROPERTIES.filter(
-    (p) => p.status === "approved" && p.landlordAccountId && p.rooms.some((r) => r.status === "available" && r.capacity > 1),
-  );
-  const selectedProperty = sharedProperties.find((p) => p.id === selectedPropertyId);
-  const eligibleRooms = selectedProperty?.rooms.filter((room) => room.capacity > 1 && room.status === "available") || [];
-  const selectedSharedRoom = eligibleRooms.find((room) => room.id === selectedRoomId);
   const quizQuestions = [
     {
       id: "sleep",
@@ -295,6 +328,12 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
           pref_cleanliness: Number(newAnswers.cleanliness),
           pref_guest_policy: PREF_MAP.guests[newAnswers.guests],
         });
+        setRoommatePreferenceOverrides({
+          sleep: PREF_MAP.sleep[newAnswers.sleep],
+          study: PREF_MAP.study[newAnswers.study],
+          cleanliness: Number(newAnswers.cleanliness),
+          guests: PREF_MAP.guests[newAnswers.guests],
+        });
         setQuizDone(true);
       } catch (error) {
         setDashboardNotice({ title: "Preferences could not be saved", message: error.message, error: true });
@@ -302,56 +341,88 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
     }
   }
   async function submitRequest() {
-    const room = eligibleRooms.find((item) => item.id === selectedRoomId);
-    if (!session?.accountId || !selectedProperty?.landlordAccountId || !room || !moveInDate) return;
+    if (!session?.studentId) return;
+    if (!hasCompleteRoommatePreferences) {
+      setDashboardNotice({
+        title: "Complete the compatibility quiz first",
+        message: "All four roommate preferences are needed to create a matching request.",
+        error: true,
+      });
+      return;
+    }
     setRequestBusy(true);
     setDashboardNotice(null);
     try {
-      await sendMessage(
-        session.accountId,
-        Number(selectedProperty.landlordAccountId),
-        [
-          `Roommate request: ${selectedProperty.title} · ${room.name}`,
-          `Preferred move-in: ${moveInDate}`,
-          `Same-gender roommate preference: ${genderText || "not set"}`,
-          `Additional note: ${note.trim() || "None"}`,
-        ].join("\n"),
-      );
-      setRequestStep("submitted");
-      if (shareRoommateRequest) {
-        try {
-          await createRoommateRequest({
-            studentId: session.studentId,
-            roomId: selectedRoomId,
-            moveInDate,
-          });
-          await refreshMine();
-        } catch (error) {
-          setDashboardNotice({
-            title: "Request sent, roommate post not published",
-            message: error.message,
-            error: true,
-          });
-        }
-      }
+      await createRoommateMatchRequest();
+      await refreshMine();
+      setRequestStep("list");
+      setDashboardNotice({ title: "Roommate request submitted", message: "A landlord will review your compatibility profile and suggest three same-gender candidates.", error: false });
     } catch (error) {
       setDashboardNotice({ title: "Request could not be sent", message: error.message, error: true });
     } finally {
       setRequestBusy(false);
     }
   }
+  async function closeMatchRequest() {
+    setRequestBusy(true);
+    try {
+      await closeRoommateMatchRequest();
+      await refreshMine();
+      setDashboardNotice({ title: "Roommate request closed", message: "You are no longer available for roommate matching.", error: false });
+    } catch (error) {
+      setDashboardNotice({ title: "Request could not be closed", message: error.message, error: true });
+    } finally {
+      setRequestBusy(false);
+    }
+  }
+  async function chooseMatchCandidate(candidate) {
+    if (!roommateMatchRequest) return;
+    setRequestBusy(true);
+    try {
+      await chooseRoommateMatchCandidate(roommateMatchRequest.id, candidate.studentId);
+      await refreshMine();
+      setDashboardNotice({ title: "Roommate selected", message: `${candidate.name} is now your roommate match.`, error: false });
+    } catch (error) {
+      setDashboardNotice({ title: "Roommate could not be selected", message: error.message, error: true });
+    } finally {
+      setRequestBusy(false);
+    }
+  }
+  async function respondToBookingInvite(invite, accept) {
+    setBookingInviteBusyId(invite.bookingId);
+    try {
+      await respondToSharedBookingInvite(invite.bookingId, accept);
+      await refreshMine();
+      setDashboardNotice({
+        title: accept ? "Roommate invite accepted" : "Roommate invite declined",
+        message: accept
+          ? invite.bookingStatus === "Confirmed"
+            ? `Sharing starts ${invite.shareStartDate}. Your monthly rent share is ₱${(invite.monthlyRent / 2).toLocaleString()}; your deposit share will be billed, and any excess deposit already paid by the resident becomes a future rent credit.`
+            : "The landlord can now review the shared booking. Rent and security deposit will be split equally if it is confirmed."
+          : "The booking can continue as a single-student request at the full room price.",
+        error: false,
+      });
+    } catch (error) {
+      setDashboardNotice({ title: "Roommate invite could not be updated", message: error.message, error: true });
+    } finally {
+      setBookingInviteBusyId("");
+    }
+  }
   async function submitPayment(event) {
     event.preventDefault();
-    if (!selectedPaymentBooking || !paymentReceipt) {
-      setDashboardNotice({ title: "Payment details required", message: "Choose a confirmed booking and attach your payment proof.", error: true });
+    if (!selectedPaymentBooking || !selectedPaymentInvoice || !paymentReceipt) {
+      setDashboardNotice({ title: "Payment details required", message: "Choose an outstanding balance and attach your payment proof.", error: true });
+      return;
+    }
+    if (Number(paymentAmount) > selectedPaymentInvoice.remainingBalance) {
+      setDashboardNotice({ title: "Amount exceeds the balance", message: "Enter an amount no greater than the remaining balance for this due item.", error: true });
       return;
     }
     setPaymentBusy(true);
     try {
       await createPayment({
-        bookingId: selectedPaymentBooking.id,
+        invoiceId: selectedPaymentInvoice.id,
         amount: paymentAmount,
-        paymentType,
         paymentMethod,
         receiptFile: paymentReceipt,
       });
@@ -371,50 +442,77 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
     return "Gender not set";
   }
   return (
-    <div className="student-dashboard max-w-6xl mx-auto px-4 sm:px-6 py-8">
+    <div className="student-dashboard dashboard-shell">
       {/* Header */}
-      <div className="flex items-center gap-4 mb-8">
-        <ProfilePhotoUpload
-          name={displayName}
-          photoUrl={studentProfile.profile_photo_url}
-          onUploaded={async (url) => {
-            await updateStudentProfile(session.studentId, { profile_photo_url: url });
-            onProfilePhotoChange?.(url);
-          }}
-        />
-        <div>
-          <div className="flex items-center gap-2">
-            <h1 className="font-display text-2xl font-semibold">Hi, {displayName}!</h1>
-            <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${genderBadgeClass}`}>{genderLabel(gender)}</span>
-          </div>
-          <p className="text-[var(--muted-foreground)] text-sm">
-            {studentProfile.academic_year || "Academic year not set"} · {studentProfile.student_id_number || "Student ID not set"}
-          </p>
-        </div>
-      </div>
+      <DashboardHeader
+        avatar={(
+          <ProfilePhotoUpload
+            name={displayName}
+            photoUrl={studentProfile.profile_photo_url}
+            onUploaded={async (url) => {
+              await updateStudentProfile(session.studentId, { profile_photo_url: url });
+              onProfilePhotoChange?.(url);
+            }}
+          />
+        )}
+        title={(
+          <>
+            Hi, {displayName}!
+            <span className={`ml-2 inline-flex rounded-full px-2 py-0.5 align-middle text-xs font-semibold ${genderBadgeClass}`}>
+              {genderLabel(gender)}
+            </span>
+          </>
+        )}
+        description={`${studentProfile.academic_year || "Academic year not set"} · ${studentProfile.student_id_number || "Student ID not set"}`}
+      />
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-[var(--border)] mb-8 overflow-x-auto">
-        {[
-          ["overview", "Overview"],
-          ["payments", "Payments"],
-          ["roommates", "Roommate Requests"],
-          ["saved", `Saved (${savedProperties.length})`],
-          ["quiz", "Compatibility Quiz"],
-        ].map(([tab, label]) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
-              activeTab === tab
-                ? "border-[var(--primary)] text-[var(--primary)]"
-                : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <DashboardTabBar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        items={[
+          { id: "overview", label: "Overview" },
+          { id: "payments", label: "Payments" },
+          { id: "roommates", label: "Roommate Requests" },
+          { id: "saved", label: `Saved (${savedProperties.length})` },
+          { id: "quiz", label: "Compatibility Quiz" },
+        ]}
+      />
+
+      {sharedBookingInvites.length > 0 && (
+        <section className="mb-8 space-y-3" aria-labelledby="shared-booking-invites-title">
+          <h2 id="shared-booking-invites-title" className="font-display text-xl font-semibold">Roommate booking invitations</h2>
+          {sharedBookingInvites.map((invite) => (
+            <article key={invite.bookingId} className="rounded-2xl border border-[var(--primary)]/30 bg-[var(--secondary)] p-5">
+              <p className="text-sm">
+                <span className="font-semibold">{invite.requesterName}</span> invited you to share {invite.propertyTitle} · {invite.roomName}.
+              </p>
+              <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                Sharing starts {invite.shareStartDate}. If accepted, your monthly rent share is ₱{(invite.monthlyRent / 2).toLocaleString()} and your security-deposit share is ₱{(invite.securityDeposit / 2).toLocaleString()}.
+                {invite.bookingStatus === "Confirmed" ? " Any deposit amount already paid above the resident’s half will be credited toward their future rent." : " The landlord must confirm the booking before billing begins."}
+              </p>
+              <div className="mt-4 flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => respondToBookingInvite(invite, true)}
+                  disabled={bookingInviteBusyId === invite.bookingId}
+                  className="rounded-lg bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  {bookingInviteBusyId === invite.bookingId ? "Updating…" : "Accept"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => respondToBookingInvite(invite, false)}
+                  disabled={bookingInviteBusyId === invite.bookingId}
+                  className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-4 py-2 text-xs font-semibold disabled:opacity-50"
+                >
+                  Decline
+                </button>
+              </div>
+            </article>
+          ))}
+        </section>
+      )}
 
       {/* ── Overview ── */}
       {activeTab === "overview" && (
@@ -463,13 +561,16 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                       <tr key={booking.id} className="hover:bg-[var(--muted)]">
                         <td className="px-4 py-3 font-medium">{booking.propertyTitle}</td>
                         <td className="px-4 py-3">{booking.roomName}</td>
-                        <td className="px-4 py-3 text-xs">{booking.startDate} → {booking.endDate}</td>
-                        <td className="px-4 py-3">₱{Number(booking.monthlyRate).toLocaleString()}/mo</td>
+                        <td className="px-4 py-3 text-xs">{studentBookingStartDate(booking, session?.studentId)} → {booking.endDate}</td>
+                        <td className="px-4 py-3">
+                          ₱{Number(booking.monthlyShare).toLocaleString()}/mo
+                          {booking.isShared && <span className="block text-[10px] text-[var(--muted-foreground)]">50% shared rent</span>}
+                        </td>
                         <td className="px-4 py-3"><span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-xs font-semibold text-[var(--primary)]">{booking.status}</span></td>
                         <td className="px-4 py-3">
                           <div className="flex flex-wrap gap-2">
                             <button type="button" onClick={() => setBookingDetail(booking)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">View details</button>
-                            {booking.status === "Confirmed" && booking.startDate <= todayDate && (
+                            {booking.status === "Confirmed" && booking.studentId === String(session?.studentId) && booking.startDate <= todayDate && (
                               <button type="button" onClick={() => setStayDecisionBookingId(booking.id)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-semibold">Move-out / renew</button>
                             )}
                           </div>
@@ -495,6 +596,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                       onSelectProperty(p.id);
                       onNavigate("detail");
                     }}
+                    imageClickNavigates
                     onCompare={onCompare}
                     inComparison={comparedIds.includes(p.id)}
                   />
@@ -506,7 +608,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
             <div className="flex-1">
               <h3 className="font-display text-lg font-semibold mb-1">Need a roommate?</h3>
               <p className="text-sm text-white/75">
-                Submit a request to a landlord — they'll find the best same-sex match for you from verified students.
+                You can find a roommate before booking a boarding house. Complete the compatibility quiz first, then submit a request.
               </p>
             </div>
             <button
@@ -527,12 +629,14 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
           <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
             <div className="mb-4">
               <h2 className="font-display text-xl font-semibold">Submit a payment</h2>
-              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Submit proof of a monthly rent or security deposit payment for a confirmed stay. Your landlord will review it.</p>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Choose an outstanding rent or deposit balance. The amount is filled from your balance; you may pay it in part. Your landlord will review the receipt.</p>
             </div>
             {payableBookings.length === 0 ? (
               <div className="rounded-xl bg-[var(--muted)] p-4 text-sm text-[var(--muted-foreground)]">
-                You can submit a payment after a landlord confirms one of your bookings.
-                {bookings.filter((booking) => booking.status === "Pending").map((booking) => (
+                {myBookings.some((booking) => booking.status === "Confirmed")
+                  ? "There are no outstanding balances. Pending payments are counted until your landlord reviews them."
+                  : "You can submit a payment after a landlord confirms one of your bookings."}
+                {myBookings.filter((booking) => booking.status === "Pending").map((booking) => (
                   <p key={booking.id} className="mt-2">{booking.propertyTitle} · {booking.roomName} is awaiting landlord confirmation. The payment form will be available here once approved.</p>
                 ))}
               </div>
@@ -542,20 +646,30 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                   Confirmed booking
                   <select value={paymentBookingId} onChange={(event) => setPaymentBookingId(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal">
                     {payableBookings.map((booking) => (
-                      <option key={booking.id} value={booking.id}>{booking.propertyTitle} · {booking.roomName}</option>
+                      <option key={booking.id} value={booking.id}>
+                        {booking.propertyTitle} · {booking.roomName}{booking.isShared ? " · shared" : ""}
+                      </option>
                     ))}
                   </select>
                 </label>
                 <label className="text-xs font-semibold">
-                  Payment type
-                  <select value={paymentType} onChange={(event) => setPaymentType(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal">
-                    <option>Monthly rent</option>
-                    <option>Security deposit</option>
+                  Outstanding item
+                  <select value={paymentInvoiceId} onChange={(event) => setPaymentInvoiceId(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal">
+                    {payableInvoices.map((invoice) => (
+                      <option key={invoice.id} value={invoice.id}>
+                        {invoice.paymentType} · {invoice.periodStart}–{invoice.periodEnd} · ₱{invoice.remainingBalance.toLocaleString()} remaining
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label className="text-xs font-semibold">
-                  Amount (₱)
-                  <input type="number" min="0.01" step="0.01" required value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal" />
+                  Amount to pay (₱)
+                  <input type="number" min="0.01" max={selectedPaymentInvoice?.remainingBalance} step="0.01" required value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} className="mt-1 block w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-sm font-normal" />
+                  {selectedPaymentInvoice && (
+                    <span className="mt-1 block font-normal text-[var(--muted-foreground)]">
+                      Remaining: ₱{selectedPaymentInvoice.remainingBalance.toLocaleString()} (includes payments awaiting review)
+                    </span>
+                  )}
                 </label>
                 <label className="text-xs font-semibold">
                   Payment method
@@ -616,266 +730,176 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       {/* ── Roommate Requests ── */}
       {activeTab === "roommates" && (
         <div className="space-y-6">
-          <div className="bg-[var(--secondary)] border border-[var(--primary)]/15 rounded-xl p-4 flex gap-3 text-sm">
-            <span className="text-xl flex-shrink-0">ℹ️</span>
-            <div className="text-[var(--primary)]">
-              Public roommate posts are optional. If you publish one, other students can see your name, photo, gender, preferences, requested room, and move-in date and can message you directly.
-            </div>
+          <div className="rounded-xl border border-[var(--primary)]/15 bg-[var(--secondary)] p-4 text-sm text-[var(--primary)]">
+            You do not need a boarding house booking to apply. Complete the compatibility quiz first; landlords suggest three same-gender candidates, then you choose one.
           </div>
 
           {requestStep === "list" && (
-            <>
-              <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl font-semibold">Roommate board</h2>
+            <section className="space-y-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h2 className="font-display text-xl font-semibold">Your roommate match</h2>
                 <button
-                  onClick={() => setRequestStep("form")}
-                  className="px-4 py-2 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
+                  type="button"
+                  onClick={() => refreshMine()}
+                  className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-semibold"
                 >
-                  + New Request
+                  Refresh
                 </button>
               </div>
-              {roommateRequests.length === 0 ? (
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-sm text-[var(--muted-foreground)]">
-                  No open roommate posts yet. Create a request and opt in to share it with other students.
-                </div>
-              ) : (
-                <div className="grid gap-4 md:grid-cols-2">
-                  {roommateRequests.map((request) => {
-                    const isOwnPost = request.studentId === String(session?.studentId);
-                    const preferences = roommatePreferenceSummary(request.preferences);
-                    return (
-                      <article key={request.id} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-                        <div className="flex items-start gap-3">
-                          {request.profilePhotoUrl
-                            ? <img src={request.profilePhotoUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
-                            : <div aria-hidden="true" className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--secondary)] font-semibold text-[var(--primary)]">{request.name?.charAt(0) || "S"}</div>}
-                          <div className="min-w-0 flex-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <h3 className="font-semibold">{request.name}</h3>
-                              {isOwnPost && <span className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[10px] font-semibold text-[var(--primary)]">Your post</span>}
+
+              {roommateMatchRequest?.selectedStudent ? (
+                <article className="rounded-2xl border border-[var(--primary)] bg-[var(--card)] p-5">
+                  <h3 className="font-semibold">You chose your roommate</h3>
+                  <div className="mt-4 flex items-center gap-3">
+                    {roommateMatchRequest.selectedStudent.profilePhotoUrl
+                      ? <img src={roommateMatchRequest.selectedStudent.profilePhotoUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
+                      : <div aria-hidden="true" className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--secondary)] font-semibold text-[var(--primary)]">{roommateMatchRequest.selectedStudent.name?.charAt(0) || "S"}</div>}
+                    <div className="flex-1">
+                      <p className="font-semibold">{roommateMatchRequest.selectedStudent.name}</p>
+                      <p className="text-xs text-[var(--muted-foreground)]">{roommateMatchRequest.selectedStudent.gender} · Same-gender match</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!onStartChat) return onNavigate("chat");
+                        onStartChat({
+                          accountId: roommateMatchRequest.selectedStudent.accountId,
+                          name: roommateMatchRequest.selectedStudent.name,
+                          profilePhotoUrl: roommateMatchRequest.selectedStudent.profilePhotoUrl,
+                          propertyTitle: "Roommate match",
+                          role: "student",
+                        });
+                      }}
+                      className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white"
+                    >
+                      Message
+                    </button>
+                  </div>
+                </article>
+              ) : roommateMatchRequest?.isOpen ? (
+                <article className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                      <h3 className="font-semibold">Your request is active</h3>
+                      <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                        Your compatibility profile is shared with landlords for same-gender matching.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={closeMatchRequest}
+                      disabled={requestBusy}
+                      className="rounded-xl border border-[var(--border)] px-3 py-2 text-xs font-semibold disabled:opacity-50"
+                    >
+                      {requestBusy ? "Please wait…" : "Cancel request"}
+                    </button>
+                  </div>
+                  {roommateMatchCandidates.length === 0 ? (
+                    <p className="rounded-xl bg-[var(--muted)] p-4 text-sm text-[var(--muted-foreground)]">
+                      Waiting for a landlord to suggest three compatible {gender === "Female" ? "female" : "male"} candidates.
+                    </p>
+                  ) : (
+                    <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                      {roommateMatchCandidates.map((candidate) => (
+                        <article key={candidate.studentId} className="rounded-xl border border-[var(--border)] p-4">
+                          <div className="flex items-center gap-3">
+                            {candidate.profilePhotoUrl
+                              ? <img src={candidate.profilePhotoUrl} alt="" className="h-10 w-10 rounded-full object-cover" />
+                              : <div aria-hidden="true" className="flex h-10 w-10 items-center justify-center rounded-full bg-[var(--secondary)] font-semibold text-[var(--primary)]">{candidate.name?.charAt(0) || "S"}</div>}
+                            <div className="min-w-0 flex-1">
+                              <h4 className="truncate text-sm font-semibold">{candidate.name}</h4>
+                              <p className="text-xs text-[var(--muted-foreground)]">{candidate.gender}{candidate.academicYear ? ` · ${candidate.academicYear}` : ""}</p>
                             </div>
-                            <p className="text-xs text-[var(--muted-foreground)]">{request.gender || "Gender not set"}{request.academicYear ? ` · ${request.academicYear}` : ""}</p>
+                            <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800">{candidate.compatibilityScore}%</span>
                           </div>
-                        </div>
-                        <div className="mt-4 space-y-1 text-sm">
-                          <p><span className="font-medium">Property / room:</span> {request.propertyTitle} · {request.roomName}</p>
-                          <p><span className="font-medium">Move-in:</span> {request.moveInDate}</p>
-                          <p className="text-xs text-[var(--muted-foreground)]">
-                            {preferences.length ? preferences.join(" · ") : "No roommate preferences shared"}
-                          </p>
-                        </div>
-                        <div className="mt-4 flex justify-end">
-                          {isOwnPost ? (
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                try {
-                                  await closeRoommateRequest(request.id);
-                                  setRoommateRequests((current) => current.filter((item) => item.id !== request.id));
-                                } catch (error) {
-                                  setDashboardNotice({ title: "Roommate post could not be closed", message: error.message, error: true });
-                                }
-                              }}
-                              className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold"
-                            >
-                              Close post
-                            </button>
-                          ) : (
-                            <button
-                              type="button"
-                              onClick={() => onStartChat?.({
-                                accountId: request.accountId,
-                                name: request.name,
-                                profilePhotoUrl: request.profilePhotoUrl,
-                                propertyTitle: `Roommate request · ${request.propertyTitle}`,
-                                role: "student",
-                              })}
-                              className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white"
-                            >
-                              Message
-                            </button>
-                          )}
-                        </div>
-                      </article>
-                    );
-                  })}
-                </div>
+                          <p className="mt-3 text-xs text-[var(--muted-foreground)]">{roommatePreferenceSummary(candidate.preferences).join(" · ")}</p>
+                          <button
+                            type="button"
+                            onClick={() => chooseMatchCandidate(candidate)}
+                            disabled={requestBusy}
+                            className="mt-4 w-full rounded-xl bg-[var(--primary)] px-4 py-2.5 text-xs font-semibold text-white disabled:opacity-50"
+                          >
+                            Choose as roommate
+                          </button>
+                        </article>
+                      ))}
+                    </div>
+                  )}
+                </article>
+              ) : (
+                <article className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                  <h3 className="font-semibold">{roommateMatchRequest ? "Your previous request is closed" : "No active roommate request"}</h3>
+                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                    Submit your compatibility profile to let a landlord suggest three same-gender candidates.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => setRequestStep("form")}
+                    className="mt-4 rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white"
+                  >
+                    Request a roommate
+                  </button>
+                </article>
               )}
-            </>
+            </section>
           )}
 
           {requestStep === "form" && (
-            <div className="space-y-4">
+            <section className="mx-auto max-w-2xl space-y-4">
               <div className="flex items-center gap-3">
-                <button
-                  onClick={() => setRequestStep("list")}
-                  className="text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-                >
+                <button type="button" onClick={() => setRequestStep("list")} className="text-sm text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
                   ← Back
                 </button>
                 <h2 className="font-display text-xl font-semibold">Request a Roommate</h2>
               </div>
-              <div className="rounded-xl border border-[var(--primary)] bg-[var(--secondary)] p-4 text-sm text-[var(--primary)]">
-                Select an available shared room. The landlord will receive your request in Messages and can confirm roommate compatibility.
-              </div>
-              <div className="grid lg:grid-cols-[minmax(0,2fr)_minmax(15rem,1fr)] gap-4 items-start">
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 space-y-4">
-                  <div>
-                    <label className="block text-xs font-semibold mb-1.5">Select a Property</label>
-                    <select
-                      value={selectedPropertyId}
-                      onChange={(e) => {
-                        setSelectedPropertyId(e.target.value);
-                        setSelectedRoomId("");
-                      }}
-                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
+              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                <p className="text-sm text-[var(--muted-foreground)]">
+                  Your saved habits are used to calculate compatibility. A landlord will choose three candidates with the same gender as you, and you will choose your preferred match.
+                </p>
+                {hasCompleteRoommatePreferences ? (
+                  <>
+                    <dl className="mt-4 grid gap-3 sm:grid-cols-2">
+                      {[
+                        ["Sleep schedule", ROOMMATE_PREFERENCE_LABELS.sleep[roommatePreferences.sleep]],
+                        ["Study habits", ROOMMATE_PREFERENCE_LABELS.study[roommatePreferences.study]],
+                        ["Cleanliness", ROOMMATE_PREFERENCE_LABELS.cleanliness[roommatePreferences.cleanliness]],
+                        ["Guest policy", ROOMMATE_PREFERENCE_LABELS.guests[roommatePreferences.guests]],
+                      ].map(([label, value]) => (
+                        <div key={label} className="rounded-xl bg-[var(--muted)] p-3">
+                          <dt className="text-xs text-[var(--muted-foreground)]">{label}</dt>
+                          <dd className="mt-1 text-sm font-medium">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                    <p className="mt-4 text-xs text-[var(--muted-foreground)]">
+                      Matching is strictly same-gender: female students are matched with female students, and male students with male students.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={submitRequest}
+                      disabled={requestBusy || !session?.studentId || !gender}
+                      className="mt-5 w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-white disabled:opacity-40"
                     >
-                      <option value="">Select a property</option>
-                      {sharedProperties.map((property) => (
-                          <option key={property.id} value={property.id}>
-                            {property.title}
-                          </option>
-                      ))}
-                    </select>
+                      {requestBusy ? "Submitting…" : "Submit roommate request"}
+                    </button>
+                  </>
+                ) : (
+                  <div className="mt-4 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900">
+                    <p>Complete all four compatibility quiz questions before requesting a roommate.</p>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setRequestStep("list");
+                        setActiveTab("quiz");
+                      }}
+                      className="mt-3 rounded-lg bg-amber-900 px-3 py-2 text-xs font-semibold text-white"
+                    >
+                      Complete compatibility quiz
+                    </button>
                   </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1.5">Select a Room</label>
-                    <div className="space-y-2">
-                      {eligibleRooms.map((room) => (
-                        <label
-                          key={room.id}
-                          className={`flex cursor-pointer items-center gap-3 rounded-xl border p-3 ${selectedRoomId === room.id ? "border-[var(--primary)] bg-[var(--secondary)]" : "border-[var(--border)]"}`}
-                        >
-                          <input
-                            type="radio"
-                            name="room"
-                            checked={selectedRoomId === room.id}
-                            onChange={() => setSelectedRoomId(room.id)}
-                            className="accent-[var(--primary)]"
-                          />
-                          <div className="flex-1">
-                            <div className="text-sm font-medium">{room.name}</div>
-                            <div className="text-[10px] text-[var(--muted-foreground)]">Capacity {room.capacity} · ₱{Number(room.price).toLocaleString()}/mo</div>
-                          </div>
-                          <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-[9px] font-semibold text-emerald-700">Available</span>
-                        </label>
-                      ))}
-                      {selectedProperty && eligibleRooms.length === 0 && (
-                        <p className="rounded-xl border border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)]">This property has no available shared rooms.</p>
-                      )}
-                      {!selectedProperty && sharedProperties.length === 0 && (
-                        <p className="rounded-xl border border-[var(--border)] p-3 text-xs text-[var(--muted-foreground)]">No published properties currently have available shared rooms.</p>
-                      )}
-                    </div>
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1.5">Preferred Move-in Date</label>
-                    <input
-                      type="date"
-                      value={moveInDate}
-                      min={todayDate}
-                      onChange={(e) => setMoveInDate(e.target.value)}
-                      className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs font-semibold mb-1.5">
-                      Message to Landlord <span className="font-normal text-[var(--muted-foreground)]">(optional)</span>
-                    </label>
-                    <textarea
-                      value={note}
-                      onChange={(e) => setNote(e.target.value)}
-                      placeholder="Tell the landlord about your living habits…"
-                      rows={3}
-                      className="w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
-                    />
-                  </div>
-                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3 text-xs">
-                    <input
-                      type="checkbox"
-                      checked={shareRoommateRequest}
-                      onChange={(event) => setShareRoommateRequest(event.target.checked)}
-                      className="mt-0.5 accent-[var(--primary)]"
-                    />
-                    <span>
-                      Publish this request on the student roommate board. Other students may message me directly; my private contact details and note to the landlord will not be shared.
-                    </span>
-                  </label>
-                  <button
-                    onClick={submitRequest}
-                    disabled={requestBusy || !session?.accountId || !selectedProperty?.landlordAccountId || !eligibleRooms.some((room) => room.id === selectedRoomId) || !moveInDate || moveInDate < todayDate}
-                    className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-white disabled:opacity-40"
-                  >
-                    {requestBusy ? "Sending request…" : "Send Roommate Request"}
-                  </button>
-                </div>
-                <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
-                  <h3 className="font-semibold">Request Details</h3>
-                  <p className="text-xs text-[var(--muted-foreground)] mt-2">{selectedSharedRoom?.name || "Select a room"}</p>
-                  <div className="mt-3 space-y-2">
-                    {[
-                      ["Room", selectedSharedRoom ? "Shared room selected" : "Choose an available shared room"],
-                      ["Availability", selectedSharedRoom ? "Currently available" : "Based on live listing data"],
-                      ["Gender", genderText ? `${genderText} preference included in message` : "Not set on your profile"],
-                    ].map(([label, value]) => (
-                      <div key={label} className="flex flex-col gap-0.5 text-xs">
-                        <span className="font-semibold">{label}</span>
-                        <span className="text-[var(--muted-foreground)]">{value}</span>
-                      </div>
-                    ))}
-                  </div>
-                  <p className="mt-3 text-[10px] text-[var(--muted-foreground)]">
-                    Only live properties and rooms marked available are included.
-                  </p>
-                </div>
+                )}
               </div>
-            </div>
-          )}
-
-          {requestStep === "submitted" && (
-            <div className="max-w-md mx-auto text-center py-12">
-              <div className="text-5xl mb-4">📬</div>
-              <h2 className="font-display text-2xl font-semibold mb-2">Request Sent!</h2>
-              <p className="text-[var(--muted-foreground)] text-sm mb-2">
-                Your roommate request has been sent to <strong>{selectedProperty?.landlordName}</strong>.
-              </p>
-              <p className="text-sm text-[var(--muted-foreground)] mb-6">
-                Your landlord can continue the conversation in Messages. {shareRoommateRequest ? "Your request was also published on the roommate board." : ""}
-              </p>
-              <div className="bg-[var(--secondary)] rounded-2xl p-4 text-left text-sm mb-6 space-y-2">
-                <div className="flex justify-between">
-                  <span className="text-[var(--muted-foreground)]">Property</span>
-                  <span className="font-medium">{selectedProperty?.title}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--muted-foreground)]">Room</span>
-                  <span className="font-medium">{selectedProperty?.rooms.find((r) => r.id === selectedRoomId)?.name}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-[var(--muted-foreground)]">Move-in</span>
-                  <span className="font-medium">{moveInDate}</span>
-                </div>
-              </div>
-              <div className="flex flex-col justify-center gap-3 sm:flex-row">
-                <button
-                  onClick={() => {
-                    if (onStartChat) {
-                      onStartChat({
-                        accountId: Number(selectedProperty?.landlordAccountId),
-                        name: selectedProperty?.landlordName,
-                        propertyTitle: selectedProperty?.title,
-                        profilePhotoUrl: selectedProperty?.landlordAvatar,
-                      });
-                    }
-                    else onNavigate("chat");
-                  }}
-                  className="rounded-xl bg-[var(--primary)] px-6 py-3 font-semibold text-white hover:opacity-90"
-                >
-                  Open Messages
-                </button>
-                <button onClick={() => setRequestStep("list")} className="rounded-xl border border-[var(--border)] px-6 py-3 font-semibold">Done</button>
-              </div>
-            </div>
+            </section>
           )}
         </div>
       )}
@@ -1072,16 +1096,27 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
               {[
                 ["Status", bookingDetail.status],
                 ["Monthly rent", `₱${Number(bookingDetail.monthlyRate).toLocaleString()}`],
-                ["Move-in date", bookingDetail.startDate],
+                ...(bookingDetail.isShared ? [
+                  ["Your monthly rent share", `₱${Number(bookingDetail.monthlyShare).toLocaleString()}`],
+                ] : []),
+                ...(bookingDetail.hasRoommate ? [
+                  ["Your security deposit share", `₱${Number(bookingDetail.securityDepositShare).toLocaleString()}`],
+                ] : []),
+                ...(bookingDetail.hasRoommate && !bookingDetail.isShared
+                  ? [["Rent sharing starts", bookingDetail.roommateStartDate]]
+                  : []),
+                ...(bookingDetail.roommateStudentId ? [["Roommate", bookingDetail.roommateName || "Your matched roommate"]] : []),
+                ...(bookingDetail.roommateInviteStatus === "Pending" ? [["Roommate invitation", "Waiting for acceptance"]] : []),
+                ["Move-in date", studentBookingStartDate(bookingDetail, session?.studentId)],
                 ["Current billing cycle ends", bookingDetail.endDate],
               ].map(([label, value]) => <div key={label}><div className="text-xs text-[var(--muted-foreground)]">{label}</div><div className="mt-1 text-sm font-medium">{value}</div></div>)}
             </div>
             <div className="flex justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
               <button type="button" onClick={() => setBookingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
-              {bookingDetail.status === "Pending" && (
+              {bookingDetail.status === "Pending" && bookingDetail.studentId === String(session?.studentId) && (
                 <button type="button" onClick={() => cancelBooking(bookingDetail)} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Cancel booking</button>
               )}
-              {bookingDetail.status === "Confirmed" && bookingDetail.startDate <= todayDate && (
+              {bookingDetail.status === "Confirmed" && bookingDetail.studentId === String(session?.studentId) && bookingDetail.startDate <= todayDate && (
                 <button
                   type="button"
                   onClick={() => {

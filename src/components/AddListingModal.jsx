@@ -3,12 +3,12 @@
 
 // Import React's useState Hook to manage changing form data,
 // selected amenities, error messages, and submission status.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 // Import API functions from api.js.
 // createHouse() creates a new property in the Supabase database.
-// createRoom() creates a room connected to the newly created property.
-import { createHouse, createRoom, uploadPublicImages } from "../lib/api.js";
+// createRooms() creates rooms connected to the newly created property.
+import { createHouse, createRooms, uploadPublicImages } from "../lib/api.js";
 
 // Import amenity constants from mappers.js.
 // AMENITY_ENUM contains the allowed amenity values.
@@ -28,6 +28,140 @@ import { useData } from "../context/DataContext.jsx";
 // This keeps all form inputs consistent with UniRent's design.
 const input = "w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]";
 
+function createRoomDraft(id, roomNumber = `Room ${id}`) {
+  return {
+    id,
+    roomNumber,
+    capacity: "1",
+    rate: "",
+    deposit: "",
+    amenities: [],
+    photoFiles: [],
+  };
+}
+
+function RoomEditor({ room, index, canRemove, onUpdate, onRemove, onChoosePhotos }) {
+  const [photoPreviews, setPhotoPreviews] = useState([]);
+
+  useEffect(() => {
+    const previews = room.photoFiles.map((file) => ({ file, url: URL.createObjectURL(file) }));
+    setPhotoPreviews(previews);
+    return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
+  }, [room.photoFiles]);
+
+  const setField = (field) => (event) => onUpdate(room.id, field, event.target.value);
+
+  return (
+    <section className="space-y-3 rounded-xl border border-[var(--border)] p-3">
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold">Room {index + 1}</h3>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={() => onRemove(room.id)}
+            className="text-xs font-medium text-red-600 hover:underline"
+            aria-label={`Remove ${room.roomNumber}`}
+          >
+            Remove room
+          </button>
+        )}
+      </div>
+
+      <div className="grid grid-cols-2 gap-2">
+        <input
+          className={input}
+          placeholder="Room name/number"
+          value={room.roomNumber}
+          onChange={setField("roomNumber")}
+        />
+        <input
+          className={input}
+          type="number"
+          min="1"
+          placeholder="Capacity"
+          value={room.capacity}
+          onChange={setField("capacity")}
+        />
+        <input
+          className={input}
+          type="number"
+          min="0"
+          placeholder="Monthly rate ₱"
+          value={room.rate}
+          onChange={setField("rate")}
+        />
+        <input
+          className={input}
+          type="number"
+          min="0"
+          placeholder="Security deposit ₱"
+          value={room.deposit}
+          onChange={setField("deposit")}
+        />
+      </div>
+
+      <div>
+        <label className="mb-1.5 block text-sm font-semibold">
+          Room photos <span className="font-normal text-[var(--muted-foreground)]">(optional · up to 8)</span>
+        </label>
+        <input
+          type="file"
+          multiple
+          accept="image/jpeg,image/png,image/webp"
+          onChange={(event) => onChoosePhotos(event, room.id)}
+          className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm"
+        />
+        <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+          JPG, PNG, or WebP · maximum 8 MB each.
+        </p>
+        {photoPreviews.length > 0 && (
+          <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+            {photoPreviews.map(({ file, url }, photoIndex) => (
+              <div key={`${file.name}-${photoIndex}`} className="relative overflow-hidden rounded-lg border border-[var(--border)]">
+                <img src={url} alt={file.name} className="h-24 w-full object-cover" />
+                <button
+                  type="button"
+                  onClick={() => onUpdate(room.id, "photoFiles", room.photoFiles.filter((_, i) => i !== photoIndex))}
+                  aria-label={`Remove ${file.name}`}
+                  className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-[10px] text-white"
+                >
+                  Remove
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div>
+        <p className="mb-2 text-sm font-semibold">Room amenities</p>
+        <div className="flex flex-wrap gap-2">
+          {AMENITY_ENUM.map((amenity) => (
+            <button
+              type="button"
+              key={amenity}
+              onClick={() => onUpdate(
+                room.id,
+                "amenities",
+                room.amenities.includes(amenity)
+                  ? room.amenities.filter((item) => item !== amenity)
+                  : [...room.amenities, amenity],
+              )}
+              className={`rounded-full border px-3 py-1.5 text-xs font-medium ${
+                room.amenities.includes(amenity)
+                  ? "border-[var(--primary)] bg-[var(--primary)] text-white"
+                  : "border-[var(--border)] bg-[var(--muted)]"
+              }`}
+            >
+              {AMENITY_LABELS[amenity]}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
 
 // Main AddListingModal component.
 // onClose closes the modal.
@@ -39,28 +173,22 @@ export default function AddListingModal({ onClose, onCreated }) {
   const { campus, gates } = useData();
 
 
-  // Store all property and initial room information entered by the landlord.
+  // Store property information entered by the landlord.
   // These are the initial values before the landlord fills out the form.
   const [f, setF] = useState({
     title: "",             // Name of the rental property.
     address: "",           // Complete property address.
     description: "",       // Description of the property.
-    lat: "",               // Latitude coordinate of the property.
-    lng: "",               // Longitude coordinate of the property.
-    roomNumber: "Room 1",  // Default name of the initial room.
-    rate: "",              // Monthly rental price.
-    deposit: "",           // Required security deposit.
-    capacity: 1            // Maximum number of room occupants.
+    lat: "",               // Latitude selected from the map.
+    lng: "",               // Longitude selected from the map.
+    genderPolicy: "Any"
   });
+  const [rooms, setRooms] = useState([createRoomDraft(1)]);
+  const nextRoomId = useRef(2);
 
 
-  // Store the amenities selected by the landlord.
-  // An empty array means no amenities have been selected yet.
-  const [amenities, setAmenities] = useState([]);
   const [propertyPhotoFiles, setPropertyPhotoFiles] = useState([]);
-  const [roomPhotoFiles, setRoomPhotoFiles] = useState([]);
   const [propertyPhotoPreviews, setPropertyPhotoPreviews] = useState([]);
-  const [roomPhotoPreviews, setRoomPhotoPreviews] = useState([]);
 
 
   // Store error messages that may occur during validation
@@ -76,12 +204,6 @@ export default function AddListingModal({ onClose, onCreated }) {
     setPropertyPhotoPreviews(previews);
     return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
   }, [propertyPhotoFiles]);
-
-  useEffect(() => {
-    const previews = roomPhotoFiles.map((file) => ({ file, url: URL.createObjectURL(file) }));
-    setRoomPhotoPreviews(previews);
-    return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
-  }, [roomPhotoFiles]);
 
   function choosePhotos(event, setFiles) {
     const files = Array.from(event.target.files || []);
@@ -102,16 +224,24 @@ export default function AddListingModal({ onClose, onCreated }) {
       [k]: e.target.value   // Update only the field identified by k.
     }));
 
+  function updateRoom(roomId, field, value) {
+    setRooms((current) => current.map((room) =>
+      room.id === roomId ? { ...room, [field]: value } : room
+    ));
+  }
 
-  // Toggle an amenity when the landlord clicks its button.
-  // If the amenity is already selected, remove it.
-  // Otherwise, add it to the selected amenities array.
-  const toggle = (a) =>
-    setAmenities((p) =>
-      p.includes(a)
-        ? p.filter((x) => x !== a)  // Remove the selected amenity.
-        : [...p, a]                 // Add the new amenity.
-    );
+  function addRoom() {
+    const id = nextRoomId.current++;
+    setRooms((current) => [...current, createRoomDraft(id, `Room ${current.length + 1}`)]);
+  }
+
+  function removeRoom(roomId) {
+    setRooms((current) => current.filter((room) => room.id !== roomId));
+  }
+
+  function chooseRoomPhotos(event, roomId) {
+    choosePhotos(event, (files) => updateRoom(roomId, "photoFiles", files));
+  }
 
 
   // Prepare the property marker used by LeafletMap.
@@ -122,7 +252,7 @@ export default function AddListingModal({ onClose, onCreated }) {
         title: f.title || "New listing",            // Use the property name or a default title.
         lat: Number(f.lat),                         // Convert latitude from string to number.
         lng: Number(f.lng),                         // Convert longitude from string to number.
-        monthlyRent: Number(f.rate) || 0,            // Convert the rental rate into a number.
+        monthlyRent: Number(rooms[0]?.rate) || 0,     // Convert the first room's rate into a number.
         safetyScore: 0,                             // Initial placeholder safety score.
         walkingMinutes: "–"                         // Placeholder because walking time is not calculated here.
       }]
@@ -140,8 +270,23 @@ export default function AddListingModal({ onClose, onCreated }) {
 
     // Validate the required property information.
     // Stop submission and display an error if any required field is empty.
-    if (!f.title || !f.address || !f.rate)
-      return setError("Name, address and monthly rate are required.");
+    if (!f.title.trim() || !f.address.trim())
+      return setError("Property name and address are required.");
+    if (f.lat === "" || f.lng === "")
+      return setError("Click the map to pin the boarding-house location.");
+    if (rooms.length === 0)
+      return setError("Add at least one room to this listing.");
+    const invalidRoom = rooms.some((room) =>
+      !room.roomNumber.trim()
+      || room.rate === ""
+      || !Number.isFinite(Number(room.rate))
+      || Number(room.rate) < 0
+      || !Number.isInteger(Number(room.capacity))
+      || Number(room.capacity) < 1
+      || (room.deposit !== "" && (!Number.isFinite(Number(room.deposit)) || Number(room.deposit) < 0))
+    );
+    if (invalidRoom)
+      return setError("Enter a room name, valid monthly rate, and capacity of at least one for every room.");
 
 
     // Indicate that the form is currently being submitted.
@@ -154,9 +299,22 @@ export default function AddListingModal({ onClose, onCreated }) {
     // try handles the database operations.
     // catch handles errors if any operation fails.
     try {
+      const roomPhotoFiles = rooms.flatMap((room) => room.photoFiles);
       const uploadedImages = await uploadPublicImages([...propertyPhotoFiles, ...roomPhotoFiles], "listings");
       const propertyImages = uploadedImages.slice(0, propertyPhotoFiles.length);
-      const roomImages = uploadedImages.slice(propertyPhotoFiles.length);
+      let roomPhotoOffset = propertyPhotoFiles.length;
+      const roomsToCreate = rooms.map((room) => {
+        const images = uploadedImages.slice(roomPhotoOffset, roomPhotoOffset + room.photoFiles.length);
+        roomPhotoOffset += room.photoFiles.length;
+        return {
+          roomNumber: room.roomNumber.trim(),
+          monthlyRate: Number(room.rate),
+          securityDeposit: Number(room.deposit) || 0,
+          capacity: Number(room.capacity),
+          amenities: room.amenities,
+          images,
+        };
+      });
 
       // STEP 1: Create the main property record in Supabase.
       // createHouse() receives the landlord's property information.
@@ -167,20 +325,13 @@ export default function AddListingModal({ onClose, onCreated }) {
         description: f.description,             // Property description.
         lat: f.lat ? Number(f.lat) : null,       // Latitude or null if not provided.
         lng: f.lng ? Number(f.lng) : null,
+        genderPolicy: f.genderPolicy,
         images: propertyImages,       // Longitude or null if not provided.
       });
 
 
-      // STEP 2: Create the initial room associated with the property.
-      // houseId links this room to the property created in STEP 1.
-      await createRoom(houseId, {
-        roomNumber: f.roomNumber || "Room 1",    // Room name or default room name.
-        monthlyRate: Number(f.rate),             // Monthly rental rate in pesos.
-        securityDeposit: Number(f.deposit) || 0, // Deposit amount, defaulting to zero.
-        capacity: Number(f.capacity) || 1,       // Room capacity, defaulting to one.
-        amenities,
-        images: roomImages,                              // Array of selected room amenities.
-      });
+      // STEP 2: Create all rooms associated with the property.
+      await createRooms(houseId, roomsToCreate);
 
 
       // STEP 3: Notify the parent component that the listing
@@ -276,6 +427,20 @@ export default function AddListingModal({ onClose, onCreated }) {
         />
 
         <div>
+          <label htmlFor="gender-policy" className="mb-1.5 block text-sm font-semibold">Boarding-house gender policy</label>
+          <select
+            id="gender-policy"
+            className={input}
+            value={f.genderPolicy}
+            onChange={set("genderPolicy")}
+          >
+            <option value="Any">Open to all genders</option>
+            <option value="Female">Female only</option>
+            <option value="Male">Male only</option>
+          </select>
+        </div>
+
+        <div>
           <label className="mb-1.5 block text-sm font-semibold">Property photos <span className="font-normal text-[var(--muted-foreground)]">(optional · up to 8)</span></label>
           <input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => choosePhotos(event, setPropertyPhotoFiles)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
           <p className="mt-1 text-xs text-[var(--muted-foreground)]">JPG, PNG, or WebP · maximum 8 MB each. Photos are uploaded to UniRent storage.</p>
@@ -292,137 +457,55 @@ export default function AddListingModal({ onClose, onCreated }) {
         </div>
 
 
-        {/* PROPERTY LOCATION COORDINATES */}
-
-        {/* Two-column layout for latitude and longitude inputs. */}
-        <div className="grid grid-cols-2 gap-2">
-
-          {/* Latitude identifies the property's north-south position. */}
-          <input
-            className={input}
-            placeholder="Latitude (e.g. 7.0742)"
-            value={f.lat}
-            onChange={set("lat")}
-          />
-
-          {/* Longitude identifies the property's east-west position. */}
-          <input
-            className={input}
-            placeholder="Longitude (e.g. 125.6118)"
-            value={f.lng}
-            onChange={set("lng")}
-          />
-        </div>
-
-
-        {/* MAP PREVIEW */}
-
-        {/* Display the Leaflet map inside the Add Listing modal.
-            pin supplies the new property's marker.
-            campus and gates provide geographical reference information.
-            activeId identifies the new property as the active marker. */}
-        <div className="h-48 rounded-xl overflow-hidden border border-[var(--border)] relative">
-          <LeafletMap
-            properties={pin}
-            campus={campus}
-            gates={gates}
-            activeId="new"
-          />
-        </div>
-
-
-        {/* Instructions for obtaining property coordinates from OpenStreetMap. */}
-        <p className="text-xs text-[var(--muted-foreground)]">
-          Right-click a spot on openstreetmap.org → "Show address" to copy coordinates. The pin previews here.
-        </p>
-
-
-        {/* ROOM INFORMATION AND RENTAL PRICES */}
-
-        {/* Two-column layout for room and rental information. */}
-        <div className="grid grid-cols-2 gap-2">
-
-          {/* Input for the room name or room number. */}
-          <input
-            className={input}
-            placeholder="Room name/number"
-            value={f.roomNumber}
-            onChange={set("roomNumber")}
-          />
-
-          {/* Input for the maximum number of occupants allowed. */}
-          <input
-            className={input}
-            type="number"
-            min="1"
-            placeholder="Capacity"
-            value={f.capacity}
-            onChange={set("capacity")}
-          />
-
-          {/* Input for the monthly rental price in Philippine pesos. */}
-          <input
-            className={input}
-            type="number"
-            min="0"
-            placeholder="Monthly rate ₱"
-            value={f.rate}
-            onChange={set("rate")}
-          />
-
-          {/* Input for the required security deposit in Philippine pesos. */}
-          <input
-            className={input}
-            type="number"
-            min="0"
-            placeholder="Security deposit ₱"
-            value={f.deposit}
-            onChange={set("deposit")}
-          />
-        </div>
-
         <div>
-          <label className="mb-1.5 block text-sm font-semibold">Room photos <span className="font-normal text-[var(--muted-foreground)]">(optional · up to 8)</span></label>
-          <input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => choosePhotos(event, setRoomPhotoFiles)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
-          <p className="mt-1 text-xs text-[var(--muted-foreground)]">Add images of this room. JPG, PNG, or WebP · maximum 8 MB each.</p>
-          {roomPhotoPreviews.length > 0 && (
-            <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-              {roomPhotoPreviews.map(({ file, url }, index) => (
-                <div key={`${file.name}-${index}`} className="relative overflow-hidden rounded-lg border border-[var(--border)]">
-                  <img src={url} alt={file.name} className="h-24 w-full object-cover" />
-                  <button type="button" onClick={() => setRoomPhotoFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} aria-label={`Remove ${file.name}`} className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-[10px] text-white">Remove</button>
-                </div>
-              ))}
-            </div>
-          )}
+          <label className="mb-1.5 block text-sm font-semibold">Boarding-house location</label>
+          <p className="mb-2 text-xs text-[var(--muted-foreground)]">Click the map to place the pin. Click again to move it.</p>
+          <div className="h-64 rounded-xl overflow-hidden border border-[var(--border)] relative">
+            <LeafletMap
+              properties={pin}
+              campus={campus}
+              gates={gates}
+              activeId="new"
+              onLocationSelect={(lat, lng) => {
+                setF((previous) => ({
+                  ...previous,
+                  lat: String(lat),
+                  lng: String(lng),
+                }));
+              }}
+            />
+          </div>
+          <p className="mt-1 text-xs text-[var(--muted-foreground)]" aria-live="polite">
+            {f.lat !== "" && f.lng !== "" ? "Location pin selected." : "No location selected yet."}
+          </p>
         </div>
 
 
-        {/* AMENITY SELECTION */}
-
-        {/* Generate an amenity selection button for every available amenity.
-            AMENITY_ENUM supplies the values.
-            AMENITY_LABELS supplies the readable button labels. */}
-        <div className="flex flex-wrap gap-2">
-          {AMENITY_ENUM.map((a) => (
+        <div className="space-y-3">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h3 className="text-sm font-semibold">Rooms</h3>
+              <p className="text-xs text-[var(--muted-foreground)]">Add each room with its own price, capacity, photos, and amenities.</p>
+            </div>
             <button
               type="button"
-              key={a}
-
-              // Add or remove the amenity when clicked.
-              onClick={() => toggle(a)}
-
-              // Change the button's appearance depending on selection status.
-              className={`px-3 py-1.5 rounded-full text-xs font-medium border ${
-                amenities.includes(a)
-                  ? "bg-[var(--primary)] text-white border-[var(--primary)]"
-                  : "bg-[var(--muted)] border-[var(--border)]"
-              }`}
+              onClick={addRoom}
+              disabled={busy}
+              className="shrink-0 rounded-xl border border-[var(--primary)] px-3 py-2 text-xs font-semibold text-[var(--primary)] disabled:opacity-50"
             >
-
-              {/* Display the user-friendly amenity name. */}
-              {AMENITY_LABELS[a]}
+              + Add room
             </button>
+          </div>
+          {rooms.map((room, index) => (
+            <RoomEditor
+              key={room.id}
+              room={room}
+              index={index}
+              canRemove={rooms.length > 1 && !busy}
+              onUpdate={updateRoom}
+              onRemove={removeRoom}
+              onChoosePhotos={chooseRoomPhotos}
+            />
           ))}
         </div>
 

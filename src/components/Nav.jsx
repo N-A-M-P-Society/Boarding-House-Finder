@@ -24,6 +24,7 @@ const NAV_ITEMS = [
   { page: "student-dashboard", label: "Dashboard", icon: "📋", roles: ["student"] },
   { page: "landlord-dashboard", label: "Dashboard", icon: "📋", roles: ["landlord"] },
   { page: "admin", label: "Console", icon: "⚙️", roles: ["admin"] },
+  { page: "inbox", label: "Inbox", icon: "🔔", roles: ["landlord"] },
   { page: "chat", label: "Messages", icon: "💬", roles: ["student", "landlord"] },
   { page: "comparison", label: "Compare", icon: "📊", roles: ["student"] },
 ];
@@ -47,6 +48,7 @@ export default function Nav({
   displayName,
   profilePhotoUrl,
   unreadMessageCount = 0,
+  unreadNotificationCount = 0,
   isDark,
   onToggleTheme,
   onLogin,
@@ -114,8 +116,8 @@ export default function Nav({
                 The logo variant changes depending on the current theme. */}
             <Logo
               variant={isDark ? "light" : "dark"}
-              height={60}
-              maxWidth={156}
+              height={72}
+              maxWidth={180}
             />
           </button>
         )}
@@ -124,11 +126,11 @@ export default function Nav({
         {collapsed && (
           <button
             onClick={() => onNavigate("home")}
-            className="w-11 h-11 rounded-xl bg-[var(--primary)] flex items-center justify-center hover:opacity-80 transition-opacity overflow-hidden p-1"
+            className="w-12 h-12 rounded-xl bg-[var(--primary)] flex items-center justify-center hover:opacity-80 transition-opacity overflow-hidden p-1"
             title="UniRent"
           >
             {/* The smaller logo also acts as a Home navigation button. */}
-            <Logo variant="light" height={40} />
+            <Logo variant="light" height={48} />
           </button>
         )}
 
@@ -174,7 +176,12 @@ export default function Nav({
           // This is used to highlight the active page.
           const active = currentPage === item.page;
           const hasUnreadMessages = item.page === "chat" && unreadMessageCount > 0;
-          const unreadTitle = unreadMessageCount === 1 ? "1 unread message" : `${unreadMessageCount} unread messages`;
+          const hasUnreadNotifications = item.page === "inbox" && unreadNotificationCount > 0;
+          const hasUnread = hasUnreadMessages || hasUnreadNotifications;
+          const unreadCount = hasUnreadNotifications ? unreadNotificationCount : unreadMessageCount;
+          const unreadTitle = hasUnreadNotifications
+            ? unreadNotificationCount === 1 ? "1 unread notification" : `${unreadNotificationCount} unread notifications`
+            : unreadMessageCount === 1 ? "1 unread message" : `${unreadMessageCount} unread messages`;
 
           return (
             <button
@@ -186,7 +193,7 @@ export default function Nav({
 
               // When collapsed, show the page name as a tooltip.
               // When expanded, the page name is already visible.
-              title={collapsed ? `${item.label}${hasUnreadMessages ? ` (${unreadTitle})` : ""}` : undefined}
+              title={collapsed ? `${item.label}${hasUnread ? ` (${unreadTitle})` : ""}` : undefined}
 
               className={`
                 relative flex items-center gap-3 rounded-xl transition-all text-sm font-medium
@@ -216,13 +223,13 @@ export default function Nav({
               )}
 
               {/* Show the total unread message count only when messages are unread. */}
-              {hasUnreadMessages && !collapsed && (
+              {hasUnread && !collapsed && (
                 <span aria-label={unreadTitle} className="ml-auto flex h-4 min-w-4 items-center justify-center rounded-full bg-[var(--accent)] px-1 text-[10px] font-bold text-white">
-                  {unreadMessageCount > 99 ? "99+" : unreadMessageCount}
+                  {unreadCount > 99 ? "99+" : unreadCount}
                 </span>
               )}
 
-              {hasUnreadMessages && collapsed && (
+              {hasUnread && collapsed && (
                 <span aria-hidden="true" className="absolute right-1 top-1 h-2 w-2 rounded-full bg-[var(--accent)]" />
               )}
             </button>

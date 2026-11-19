@@ -525,6 +525,7 @@ export function mapHouse(h, gates, landlordsById = {}) {
     // Property coordinates for map display.
     lat,
     lng,
+    genderPolicy: h.gender_policy || "Any",
 
     /*
       MONTHLY RENT

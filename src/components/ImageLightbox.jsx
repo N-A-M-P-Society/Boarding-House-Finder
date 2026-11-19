@@ -1,7 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
-export default function ImageLightbox({ images, initialIndex = 0, title, onClose, onIndexChange }) {
+export default function ImageLightbox({
+  images,
+  initialIndex = 0,
+  title,
+  onClose,
+  onIndexChange,
+  keyboardNavigation = false,
+}) {
   const [activeIndex, setActiveIndex] = useState(initialIndex);
   const [portalRoot, setPortalRoot] = useState(null);
   const closeButtonRef = useRef(null);
@@ -37,10 +44,10 @@ export default function ImageLightbox({ images, initialIndex = 0, title, onClose
       if (event.key === "Escape") {
         event.preventDefault();
         onClose();
-      } else if (imageCount > 1 && event.key === "ArrowLeft") {
+      } else if (keyboardNavigation && imageCount > 1 && event.key === "ArrowLeft") {
         event.preventDefault();
         selectImage(activeIndex - 1);
-      } else if (imageCount > 1 && event.key === "ArrowRight") {
+      } else if (keyboardNavigation && imageCount > 1 && event.key === "ArrowRight") {
         event.preventDefault();
         selectImage(activeIndex + 1);
       }
@@ -48,7 +55,7 @@ export default function ImageLightbox({ images, initialIndex = 0, title, onClose
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [activeIndex, imageCount, onClose]);
+  }, [activeIndex, imageCount, keyboardNavigation, onClose]);
 
   if (!imageCount || !portalRoot) return null;
 
@@ -82,7 +89,8 @@ export default function ImageLightbox({ images, initialIndex = 0, title, onClose
         <img
           src={images[activeIndex]}
           alt={`${title}, photo ${activeIndex + 1} of ${imageCount}`}
-          className="max-h-full max-w-full object-contain"
+          className="h-auto w-auto max-w-full object-contain"
+          style={{ maxHeight: "calc(100dvh - 2rem)" }}
         />
         {imageCount > 1 && (
           <>

@@ -27,7 +27,9 @@ export default function PropertyCard({
   onClick,
   isSelected,
   onCompare,
-  inComparison
+  inComparison,
+  imageClickNavigates = false,
+  lightboxKeyboardNavigation = false
 }) {
   const [imageIndex, setImageIndex] = useState(0);
   const [lightboxOpen, setLightboxOpen] = useState(false);
@@ -104,10 +106,10 @@ export default function PropertyCard({
             suppressImageClick.current = false;
           }
         }}
-        onTouchStart={(event) => {
+        onTouchStart={imageClickNavigates ? undefined : (event) => {
           touchStartX.current = event.touches[0]?.clientX ?? null;
         }}
-        onTouchEnd={(event) => {
+        onTouchEnd={imageClickNavigates ? undefined : (event) => {
           const startX = touchStartX.current;
           touchStartX.current = null;
           if (startX == null || images.length < 2 || !event.changedTouches[0]) return;
@@ -122,6 +124,7 @@ export default function PropertyCard({
         <button
           type="button"
           onClick={(event) => {
+            if (imageClickNavigates) return;
             event.stopPropagation();
             if (suppressImageClick.current) {
               suppressImageClick.current = false;
@@ -129,7 +132,7 @@ export default function PropertyCard({
             }
             setLightboxOpen(true);
           }}
-          aria-label={`Open ${property.title} photo ${imageIndex + 1} in photo viewer`}
+          aria-label={imageClickNavigates ? `View ${property.title} details` : `Open ${property.title} photo ${imageIndex + 1} in photo viewer`}
           className="h-full w-full"
         >
           <img
@@ -159,13 +162,14 @@ export default function PropertyCard({
             </span>
           ))}
         </div>
-        {lightboxOpen && (
+        {lightboxOpen && !imageClickNavigates && (
           <ImageLightbox
             images={images}
             initialIndex={imageIndex}
             title={property.title}
             onClose={() => setLightboxOpen(false)}
             onIndexChange={setImageIndex}
+            keyboardNavigation={lightboxKeyboardNavigation}
           />
         )}
 
@@ -180,7 +184,7 @@ export default function PropertyCard({
           </span>
         </div>
 
-        {images.length > 1 && (
+        {images.length > 1 && !imageClickNavigates && (
           <>
             <button
               type="button"

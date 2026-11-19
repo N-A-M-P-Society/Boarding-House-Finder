@@ -9,6 +9,7 @@ function walkingColor(mins) {
 }
 export default function Listings({ onNavigate, onSelectProperty, comparedIds, onCompare, userRole, session }) {
   const [search, setSearch] = useState("");
+  const [genderFilter, setGenderFilter] = useState("");
   const [maxRent, setMaxRent] = useState("15000");
   const [minSafety, setMinSafety] = useState(0);
   const [maxWalk, setMaxWalk] = useState(15);
@@ -22,6 +23,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
   const allBadges = Array.from(new Set(visibleProperties.flatMap((p) => p.badges)));
   const filtered = visibleProperties.filter((p) => p.status === "approved")
     .filter((p) => p.title.toLowerCase().includes(search.toLowerCase()) || p.address.toLowerCase().includes(search.toLowerCase()))
+    .filter((p) => !genderFilter || (p.genderPolicy || "Any") === genderFilter)
     .filter((p) => maxRent === "" || p.monthlyRent <= Number(maxRent))
     .filter((p) => p.safetyScore >= minSafety)
     .filter((p) => p.walkingMinutes <= maxWalk)
@@ -47,6 +49,22 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
             placeholder="Search listings..."
             className="w-full px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)] focus:border-[var(--ring)] transition-all"
           />
+        </div>
+
+        <div>
+          <label htmlFor="gender-filter" className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
+            Boarding-house gender policy
+          </label>
+          <select
+            id="gender-filter"
+            value={genderFilter}
+            onChange={(event) => setGenderFilter(event.target.value)}
+            className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2.5 text-sm outline-none focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]"
+          >
+            <option value="">All boarding houses</option>
+            <option value="Female">Female only</option>
+            <option value="Male">Male only</option>
+          </select>
         </div>
 
         {/* Sort */}
@@ -156,6 +174,8 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
             campus={campus}
             gates={gates}
             radiusMeters={maxWalk * 80}
+            fitRadius
+            scrollWheelZoom="center"
             activeId={activePin}
             onSelect={setActivePin}
             onViewDetails={(id) => {
@@ -205,6 +225,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
               <PropertyCard
                 key={p.id}
                 property={p}
+                imageClickNavigates
                 onClick={() => {
                   onSelectProperty(p.id);
                   onNavigate("detail");

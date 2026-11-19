@@ -2,14 +2,10 @@
 import { supabase } from "./supabase.js";
 import { HOUSE_SELECT, mapGate, mapHouse } from "./mappers.js";
 
-/*
-  This helper checks whether a Supabase operation returned an error.
+export const GENERIC_ERROR_MESSAGE = "Something went wrong. Please try again.";
 
-  If an error exists, it throws a JavaScript Error using the error message.
-  This allows the calling function or component to catch and display the error.
-*/
 const fail = (error) => {
-  if (error) throw new Error(error.message || String(error));
+  if (error) throw new Error(GENERIC_ERROR_MESSAGE);
 };
 
 const PUBLIC_MEDIA_BUCKET = "unirent-images";
@@ -50,7 +46,7 @@ async function uploadStorageFiles(files, bucket, folder, allowedTypes, maxBytes,
     if (uploadedPaths.length > 0) {
       const { error: cleanupError } = await supabase.storage.from(bucket).remove(uploadedPaths);
       if (cleanupError) {
-        throw new Error(`${error.message} Uploaded files could not be cleaned up: ${cleanupError.message}`);
+        throw new Error(GENERIC_ERROR_MESSAGE);
       }
     }
     throw error;
@@ -145,6 +141,18 @@ export async function signIn(email, password) {
 
   // Return the authentication result, including user/session data.
   return data;
+}
+
+export async function requestPasswordReset(email, redirectTo) {
+  const { error } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
+    redirectTo,
+  });
+  fail(error);
+}
+
+export async function updatePassword(password) {
+  const { error } = await supabase.auth.updateUser({ password });
+  fail(error);
 }
 
 /*
@@ -424,6 +432,7 @@ export async function createHouse({
   description,
   lat,
   lng,
+  genderPolicy = "Any",
   images = []
 }) {
   const { data, error } = await supabase
@@ -436,6 +445,7 @@ export async function createHouse({
       // Use null if latitude or longitude was not provided.
       latitude: lat ?? null,
       longitude: lng ?? null,
+      gender_policy: genderPolicy,
       image_urls: images
     })
 
@@ -482,27 +492,32 @@ export async function updateHouse(houseId, patch) {
   The ?? operator supplies a default value when a field is null
   or undefined.
 */
-export async function createRoom(houseId, {
-  roomNumber,
-  monthlyRate,
-  securityDeposit,
-  capacity,
-  amenities,
-  images = []
-}) {
-  const { error } = await supabase
+export async function createRooms(houseId, rooms) {
+  if (!Array.isArray(rooms) || rooms.length === 0) {
+    throw new Error("Add at least one room.");
+  }
+
+  const { data, error } = await supabase
     .from("rooms")
-    .insert({
+    .insert(rooms.map((room) => ({
       house_id: houseId,
-      room_number: roomNumber,
-      monthly_rate: monthlyRate,
-      security_deposit: securityDeposit ?? 0,
-      capacity: capacity ?? 1,
-      amenities: amenities ?? [],
-      image_urls: images
-    });
+      room_number: room.roomNumber,
+      monthly_rate: room.monthlyRate,
+      security_deposit: room.securityDeposit ?? 0,
+      capacity: room.capacity ?? 1,
+      amenities: room.amenities ?? [],
+      image_urls: room.images ?? [],
+    })))
+    .select("room_id");
 
   fail(error);
+  return (data || []).map((room) => String(room.room_id));
+}
+
+export async function createRoom(houseId, room) {
+  const [roomId] = await createRooms(houseId, [room]);
+  if (!roomId) throw new Error("Room could not be saved. Please try again.");
+  return roomId;
 }
 
 /*
@@ -512,12 +527,15 @@ export async function createRoom(houseId, {
   roomId identifies the room, while patch contains the new values.
 */
 export async function updateRoom(roomId, patch) {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from("rooms")
     .update(patch)
-    .eq("room_id", roomId);
+    .eq("room_id", roomId)
+    .select("room_id")
+    .maybeSingle();
 
   fail(error);
+  if (!data) throw new Error("Room could not be updated. Refresh and try again.");
 }
 
 /*
@@ -645,8 +663,27 @@ export async function createBooking({
   studentId,
   roomId,
   startDate,
-  endDate
+  endDate,
+  roommateStudentId = null,
 }) {
+  if (roommateStudentId) {
+    const { data, error } = await supabase.rpc("create_shared_room_booking", {
+      p_room_id: Number(roomId),
+      p_start_date: startDate,
+      p_end_date: endDate,
+      p_roommate_student_id: Number(roommateStudentId),
+    });
+
+    if (error?.code === "23P01") {
+      throw new Error("This room is no longer available for the selected dates. Choose a different room or date.");
+    }
+    if (error && /room is unavailable/i.test(error.message)) {
+      throw new Error("This room is no longer available. Choose a different room.");
+    }
+    fail(error);
+    return data;
+  }
+
   const { data, error } = await supabase
     .from("bookings")
     .insert({
@@ -660,10 +697,8 @@ export async function createBooking({
     .single();
 
   if (error) {
-    // Show a user-friendly message when the room is already booked
-    // for the requested date range.
     if (error.code === "23P01") {
-      throw new Error("That room is already booked for those dates.");
+      throw new Error("This room is no longer available for the selected dates. Choose a different room or date.");
     }
 
     // Throw any other database error.
@@ -674,6 +709,41 @@ export async function createBooking({
   return data.booking_id;
 }
 
+export async function createRoommateJoinRequest(bookingId, startDate) {
+  const { data, error } = await supabase.rpc("request_to_join_room_booking", {
+    p_booking_id: Number(bookingId),
+    p_start_date: startDate,
+  });
+
+  fail(error);
+  return data;
+}
+
+export async function fetchMySharedBookingInvites() {
+  const { data, error } = await supabase.rpc("get_my_shared_booking_invites");
+  fail(error);
+  return (data || []).map((invite) => ({
+    bookingId: String(invite.booking_id),
+    requesterName: invite.requester_name,
+    propertyTitle: invite.property_title,
+    roomName: invite.room_name,
+    startDate: invite.start_date,
+    endDate: invite.end_date,
+    shareStartDate: invite.share_start_date,
+    bookingStatus: invite.booking_status,
+    monthlyRent: Number(invite.monthly_rent),
+    securityDeposit: Number(invite.security_deposit),
+  }));
+}
+
+export async function respondToSharedBookingInvite(bookingId, accept) {
+  const { error } = await supabase.rpc("respond_to_shared_booking_invite", {
+    p_booking_id: Number(bookingId),
+    p_accept: Boolean(accept),
+  });
+  fail(error);
+}
+
 export async function fetchPublicRoomBookings(houseId) {
   const { data, error } = await supabase.rpc("get_public_room_bookings", {
     p_house_id: Number(houseId),
@@ -682,11 +752,30 @@ export async function fetchPublicRoomBookings(houseId) {
   fail(error);
 
   return (data || []).map((booking) => ({
+    bookingId: String(booking.booking_id),
     roomId: String(booking.room_id),
     startDate: booking.start_date,
     endDate: booking.end_date,
     status: booking.status,
     openEnded: booking.is_open_ended,
+    occupiedSlots: Number(booking.occupied_slots),
+    isMyMatch: Boolean(booking.is_my_match),
+  }));
+}
+
+export async function fetchMyInvoiceBalances() {
+  const { data, error } = await supabase.rpc("get_my_invoice_balances");
+  fail(error);
+  return (data || []).map((invoice) => ({
+    id: String(invoice.invoice_id),
+    bookingId: String(invoice.booking_id),
+    studentId: String(invoice.student_id),
+    paymentType: invoice.payment_type,
+    periodStart: invoice.period_start,
+    periodEnd: invoice.period_end,
+    amountDue: Number(invoice.amount_due),
+    remainingBalance: Number(invoice.remaining_balance),
+    dueDate: invoice.due_date,
   }));
 }
 
@@ -705,7 +794,8 @@ export async function fetchBookings() {
     .from("bookings")
     .select(`
       *,
-      students ( full_name, student_id_number ),
+      students!bookings_student_id_fkey ( full_name, student_id_number ),
+      roommate:students!bookings_roommate_student_id_fkey ( full_name ),
       rooms (
         room_id,
         room_number,
@@ -727,25 +817,43 @@ export async function fetchBookings() {
     The database uses its own column names, while the frontend
     uses convenient names such as studentName and propertyTitle.
   */
-  return (data || []).map((b) => ({
-    id: String(b.booking_id),
-    studentId: String(b.student_id),
-    studentName: b.students?.full_name || "Student",
-    roomId: String(b.room_id),
-    roomName: b.rooms?.room_number,
-    propertyId: String(b.rooms?.house_id),
-    propertyTitle: b.rooms?.boarding_houses?.house_name,
-    monthlyRate: Number(b.rooms?.monthly_rate || 0),
-    securityDeposit: Number(b.rooms?.security_deposit || 0),
-    startDate: b.start_date,
-    endDate: b.end_date,
-    actualEndDate: b.actual_end_date || null,
-    status: b.status,
-    openEnded: b.status === "Confirmed" && !b.actual_end_date,
+  return (data || []).map((b) => {
+    const hasRoommate = b.roommate_invite_status === "Accepted";
+    const isShared = hasRoommate && (
+      b.status !== "Confirmed" ||
+      !b.roommate_start_date ||
+      b.roommate_start_date < b.end_date
+    );
+    const monthlyRate = Number(b.rooms?.monthly_rate || 0);
+    const securityDeposit = Number(b.rooms?.security_deposit || 0);
+    return {
+      id: String(b.booking_id),
+      studentId: String(b.student_id),
+      studentName: b.students?.full_name || "Student",
+      roommateStudentId: b.roommate_student_id == null ? "" : String(b.roommate_student_id),
+      roommateName: b.roommate?.full_name || "",
+      roommateInviteStatus: b.roommate_invite_status || "",
+      roommateStartDate: b.roommate_start_date || null,
+      hasRoommate,
+      isShared,
+      roomId: String(b.room_id),
+      roomName: b.rooms?.room_number,
+      propertyId: String(b.rooms?.house_id),
+      propertyTitle: b.rooms?.boarding_houses?.house_name,
+      monthlyRate,
+      monthlyShare: isShared ? Math.round(monthlyRate * 50) / 100 : monthlyRate,
+      securityDeposit,
+      securityDepositShare: hasRoommate ? Math.round(securityDeposit * 50) / 100 : securityDeposit,
+      startDate: b.start_date,
+      endDate: b.end_date,
+      actualEndDate: b.actual_end_date || null,
+      status: b.status,
+      openEnded: b.status === "Confirmed" && !b.actual_end_date,
 
-    // Keep only the date portion of the creation timestamp.
-    createdAt: (b.created_at || "").slice(0, 10)
-  }));
+      // Keep only the date portion of the creation timestamp.
+      createdAt: (b.created_at || "").slice(0, 10)
+    };
+  });
 }
 
 /*
@@ -812,15 +920,14 @@ export async function fetchPayments() {
       *,
       bookings (
         booking_id,
-        student_id,
         start_date,
         end_date,
-        students ( full_name ),
         rooms (
           room_number,
           boarding_houses ( house_name, landlord_id )
         )
-      )
+      ),
+      student:students!payments_student_id_fkey ( full_name )
     `)
     .order("payment_date", { ascending: false });
 
@@ -829,8 +936,9 @@ export async function fetchPayments() {
   return (data || []).map((payment) => ({
     id: String(payment.payment_id),
     bookingId: String(payment.booking_id),
-    studentId: String(payment.bookings?.student_id),
-    studentName: payment.bookings?.students?.full_name || "Student",
+    invoiceId: payment.invoice_id == null ? "" : String(payment.invoice_id),
+    studentId: String(payment.student_id),
+    studentName: payment.student?.full_name || "Student",
     propertyTitle: payment.bookings?.rooms?.boarding_houses?.house_name || "Property",
     landlordId: String(payment.bookings?.rooms?.boarding_houses?.landlord_id || ""),
     roomName: payment.bookings?.rooms?.room_number || "Room",
@@ -849,21 +957,19 @@ export async function fetchPayments() {
 /*
   CREATE PAYMENT
 
-  Saves a payment record associated with a booking.
+  Saves a payment against an invoice for the authenticated student.
 
   Parameters:
-  - bookingId: related booking
+  - invoiceId: outstanding invoice
   - amount: payment amount
-  - paymentType: type of payment
   - paymentMethod: how the payment was made
-  - receiptUrl: location of the uploaded receipt
+  - receiptFile: uploaded payment proof
 
   A new payment starts with verification_status set to "Pending".
 */
 export async function createPayment({
-  bookingId,
+  invoiceId,
   amount,
-  paymentType,
   paymentMethod,
   receiptFile
 }) {
@@ -873,29 +979,22 @@ export async function createPayment({
   }
   if (!receiptFile) throw new Error("Upload your payment receipt before submitting.");
   const receiptPath = await uploadPaymentProof(receiptFile);
-  const { data, error } = await supabase
-    .from("payments")
-    .insert({
-      booking_id: Number(bookingId),
-      amount: paymentAmount,
-      payment_type: paymentType,
-      payment_method: paymentMethod ?? null,
-      receipt_url: receiptPath,
-      verification_status: "Pending"
-    })
-    .select("payment_id")
-    .single();
-
+  const { data, error } = await supabase.rpc("submit_payment", {
+    p_invoice_id: Number(invoiceId),
+    p_amount: paymentAmount,
+    p_payment_method: paymentMethod ?? null,
+    p_receipt_path: receiptPath,
+  });
   if (error) {
     const { error: cleanupError } = await supabase.storage
       .from(PRIVATE_DOCUMENT_BUCKET)
       .remove([receiptPath]);
     if (cleanupError) {
-      throw new Error(`${error.message} The uploaded receipt could not be cleaned up: ${cleanupError.message}`);
+      throw new Error(GENERIC_ERROR_MESSAGE);
     }
     fail(error);
   }
-  return String(data.payment_id);
+  return String(data);
 }
 
 /*
@@ -1043,55 +1142,96 @@ export async function fetchMessages(myAccountId) {
   return data || [];
 }
 
-export async function fetchRoommateRequests() {
-  const { data, error } = await supabase.rpc("get_public_roommate_requests");
-  fail(error);
-
-  return (data || []).map((request) => ({
-    id: String(request.request_id),
-    studentId: String(request.student_id),
-    accountId: Number(request.account_id),
-    name: request.full_name,
-    profilePhotoUrl: request.profile_photo_url || "",
-    gender: request.gender || "",
-    academicYear: request.academic_year || "",
+function mapRoommateProfile(row) {
+  return {
+    studentId: String(row.student_id),
+    accountId: Number(row.account_id),
+    name: row.full_name,
+    profilePhotoUrl: row.profile_photo_url || "",
+    gender: row.gender || "",
+    academicYear: row.academic_year || "",
     preferences: {
-      sleep: request.pref_sleep_schedule,
-      study: request.pref_study_habits,
-      cleanliness: request.pref_cleanliness,
-      guests: request.pref_guest_policy,
+      sleep: row.pref_sleep_schedule,
+      study: row.pref_study_habits,
+      cleanliness: row.pref_cleanliness,
+      guests: row.pref_guest_policy,
     },
-    propertyTitle: request.house_name,
-    roomName: request.room_number,
-    moveInDate: request.move_in_date,
+    compatibilityScore: row.compatibility_score == null ? null : Number(row.compatibility_score),
+    isNominated: Boolean(row.is_nominated),
+  };
+}
+
+export async function fetchMyRoommateMatchRequest() {
+  const { data, error } = await supabase.rpc("get_my_roommate_match_request");
+  fail(error);
+  const request = data?.[0];
+  if (!request) return null;
+
+  return {
+    id: String(request.request_id),
+    isOpen: request.is_open,
+    selectedStudent: request.selected_student_id == null
+      ? null
+      : {
+          studentId: String(request.selected_student_id),
+          accountId: Number(request.selected_account_id),
+          name: request.selected_full_name,
+          profilePhotoUrl: request.selected_profile_photo_url || "",
+          gender: request.selected_gender || "",
+        },
+  };
+}
+
+export async function fetchMyRoommateMatchCandidates() {
+  const { data, error } = await supabase.rpc("get_my_roommate_match_candidates");
+  fail(error);
+  return (data || []).map(mapRoommateProfile);
+}
+
+export async function createRoommateMatchRequest() {
+  const { data, error } = await supabase.rpc("create_roommate_match_request");
+  fail(error);
+  return data;
+}
+
+export async function closeRoommateMatchRequest() {
+  const { error } = await supabase.rpc("close_roommate_match_request");
+  fail(error);
+}
+
+export async function chooseRoommateMatchCandidate(requestId, studentId) {
+  const { error } = await supabase.rpc("choose_roommate_match_candidate", {
+    p_request_id: Number(requestId),
+    p_candidate_student_id: Number(studentId),
+  });
+  fail(error);
+}
+
+export async function fetchLandlordRoommateMatchRequests() {
+  const { data, error } = await supabase.rpc("get_landlord_roommate_match_requests");
+  fail(error);
+  return (data || []).map((request) => ({
+    ...mapRoommateProfile(request),
+    id: String(request.request_id),
+    candidateCount: Number(request.candidate_count || 0),
+    createdAt: request.created_at,
   }));
 }
 
-export async function createRoommateRequest({ studentId, roomId, moveInDate }) {
-  const { data, error } = await supabase
-    .from("roommate_board_requests")
-    .insert({
-      student_id: Number(studentId),
-      room_id: Number(roomId),
-      move_in_date: moveInDate,
-    })
-    .select("request_id")
-    .single();
-
+export async function fetchRoommateMatchCandidates(requestId) {
+  const { data, error } = await supabase.rpc("get_roommate_match_candidates", {
+    p_request_id: Number(requestId),
+  });
   fail(error);
-  return data.request_id;
+  return (data || []).map(mapRoommateProfile);
 }
 
-export async function closeRoommateRequest(requestId) {
-  const { data, error } = await supabase
-    .from("roommate_board_requests")
-    .update({ is_open: false })
-    .eq("request_id", Number(requestId))
-    .select("request_id")
-    .maybeSingle();
-
+export async function setRoommateMatchCandidates(requestId, studentIds) {
+  const { error } = await supabase.rpc("set_roommate_match_candidates", {
+    p_request_id: Number(requestId),
+    p_candidate_student_ids: studentIds.map(Number),
+  });
   fail(error);
-  if (!data) throw new Error("This roommate post is no longer available. Refresh the list and try again.");
 }
 
 /*
@@ -1137,6 +1277,36 @@ export async function markRead(messageIds) {
     .from("messages")
     .update({ is_read: true })
     .in("message_id", messageIds);
+
+  fail(error);
+}
+
+export async function fetchNotifications(limit = 100) {
+  const { data, error } = await supabase
+    .from("notifications")
+    .select("notification_id, notification_type, title, body, related_verification_id, created_at, is_read")
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  fail(error);
+  return data || [];
+}
+
+export async function fetchUnreadNotificationCount() {
+  const { count, error } = await supabase
+    .from("notifications")
+    .select("notification_id", { count: "exact", head: true })
+    .or("is_read.eq.false,is_read.is.null");
+
+  fail(error);
+  return count || 0;
+}
+
+export async function markNotificationRead(notificationId) {
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true })
+    .eq("notification_id", Number(notificationId));
 
   fail(error);
 }

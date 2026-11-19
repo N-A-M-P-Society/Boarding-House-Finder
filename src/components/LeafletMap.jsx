@@ -43,6 +43,9 @@ const esc = (s) =>
  * activeId        - ID of the currently selected property.
  * onSelect(id)    - Callback called when a property marker is clicked.
  * onViewDetails(id) - Callback called when the popup's View Details button is clicked.
+ * onLocationSelect(lat, lng) - Callback called when the map is clicked to select a location.
+ * fitRadius       - Fits the map to the radius around campus when the radius changes.
+ * scrollWheelZoom - Enables mouse-wheel zooming; "center" keeps zoom centered on the map.
  * singleZoom      - Fixed zoom level used on a property detail page.
  * className       - Additional CSS classes for the map container.
  */
@@ -53,6 +56,9 @@ export default function LeafletMap({
   activeId = null,
   onSelect,
   onViewDetails,
+  onLocationSelect,
+  fitRadius = false,
+  scrollWheelZoom = true,
   singleZoom = null, // When set, zoom to the selected property at this fixed zoom level.
   className = "",
 }) {
@@ -65,6 +71,8 @@ export default function LeafletMap({
 
   // Stores the Leaflet layer group containing the map's markers and circles.
   const layerRef = useRef(null);
+  const radiusFitRef = useRef({ enabled: false, radius: null });
+  const hasInitialFitRef = useRef(false);
 
   // Stores the Leaflet library after it has been imported.
   const LRef = useRef(null);
@@ -73,7 +81,7 @@ export default function LeafletMap({
   // This allows Leaflet event handlers to access updated callbacks without
   // needing to recreate the entire map.
   const cbRef = useRef({});
-  cbRef.current = { onSelect, onViewDetails };
+  cbRef.current = { onSelect, onViewDetails, onLocationSelect };
 
   // FIXED campus coordinates for ADDU.
   // These coordinates are used as the center of the map and walking-radius circle.
@@ -110,7 +118,7 @@ export default function LeafletMap({
       // setView() sets the initial center coordinates and zoom level.
       const map = L.map(elRef.current, {
         zoomControl: true,
-        scrollWheelZoom: true
+        scrollWheelZoom
       }).setView([campusLat, campusLng], 16);
 
       // Add OpenStreetMap tiles as the map's background.
@@ -130,6 +138,12 @@ export default function LeafletMap({
 
       // Save the map instance so other functions and effects can access it.
       mapRef.current = map;
+
+      if (onLocationSelect) {
+        map.on("click", (event) => {
+          cbRef.current.onLocationSelect?.(event.latlng.lat, event.latlng.lng);
+        });
+      }
 
       // Listen for the event that occurs when a map popup opens.
       map.on("popupopen", (e) => {
@@ -195,7 +209,7 @@ export default function LeafletMap({
 
     // WALKING RADIUS AROUND CAMPUS
     // Draw a circle around the ADDU campus to show the selected radius.
-    L.circle([campusLat, campusLng], {
+    const radiusCircle = L.circle([campusLat, campusLng], {
       radius: radiusMeters, // Circle radius in meters.
       color: "#F4623A",     // Circle outline color.
       weight: 2,            // Outline thickness.
@@ -325,13 +339,25 @@ export default function LeafletMap({
       map.setView(bounds[1], singleZoom);
     }
 
-    // Otherwise, automatically adjust the map to show all properties
-    // and the campus marker.
-    else if (bounds.length > 1) {
+    else if (fitRadius) {
+      if (!radiusFitRef.current.enabled || radiusFitRef.current.radius !== radiusMeters) {
+        map.fitBounds(radiusCircle.getBounds(), {
+          padding: [32, 32],
+          maxZoom: 19,
+        });
+        radiusFitRef.current = { enabled: true, radius: radiusMeters };
+      }
+    }
+
+    // Fit initial property bounds once, but preserve user positioning afterward.
+    else if (bounds.length > 1 && !cbRef.current.onLocationSelect && !hasInitialFitRef.current) {
       map.fitBounds(bounds, {
         padding: [48, 48], // Add space around the outermost markers.
         maxZoom: 17        // Prevent the map from zooming in too closely.
       });
+      hasInitialFitRef.current = true;
+    } else if (!fitRadius) {
+      radiusFitRef.current.enabled = false;
     }
   }
 
@@ -348,27 +374,7 @@ export default function LeafletMap({
     draw();
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [properties, campusLat, campusLng, gates, radiusMeters, activeId]);
-
-  // PAN TO THE ACTIVE PROPERTY
-  // This effect runs whenever activeId changes.
-  useEffect(() => {
-
-    // Get the current Leaflet map instance.
-    const map = mapRef.current;
-
-    // Stop if the map does not exist or no property is selected.
-    if (!map || !activeId) return;
-
-    // Find the property whose ID matches the selected activeId.
-    const p = properties.find((x) => String(x.id) === String(activeId));
-
-    // If the property has a latitude, move the map to its coordinates.
-    // panTo() moves the map without automatically changing its zoom level.
-    if (p?.lat != null) map.panTo([p.lat, p.lng]);
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeId]);
+  }, [properties, campusLat, campusLng, gates, radiusMeters, activeId, fitRadius, singleZoom]);
 
   // MAP CONTAINER
   // This div is where Leaflet renders the interactive map.

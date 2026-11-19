@@ -4,6 +4,7 @@ import { supabase } from "../lib/supabase.js";
 import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
 import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
 import {
+  createRoom,
   completeBooking,
   fetchBookings,
   fetchPayments,
@@ -12,13 +13,26 @@ import {
   setBookingStatus,
   updateLandlordProfile,
   updateHouse,
+  updateRoom,
   uploadPublicImages,
   uploadVerificationDocuments,
   submitVerification,
   fetchLatestLandlordVerification,
+  fetchLandlordRoommateMatchRequests,
+  fetchRoommateMatchCandidates,
+  setRoommateMatchCandidates as saveRoommateMatchCandidates,
 } from "../lib/api.js";
+import { AMENITY_ENUM, AMENITY_LABELS } from "../lib/mappers.js";
 import AddListingModal from "../components/AddListingModal.jsx";
+import DashboardHeader from "../components/DashboardHeader.jsx";
+import DashboardTabBar from "../components/DashboardTabBar.jsx";
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
+const ROOMMATE_PREFERENCE_LABELS = {
+  sleep: { 1: "Early sleeper", 2: "Flexible sleep schedule", 3: "Night owl" },
+  study: { 1: "Quiet study", 2: "Background music", 3: "Group study" },
+  cleanliness: { 1: "Very clean", 2: "Very clean", 3: "Organized chaos", 4: "Generally tidy", 5: "Spotless" },
+  guests: { 1: "No guests", 2: "Occasional guests", 3: "Frequent guests" },
+};
 function AvailabilityCalendar({ rooms, bookings, onEvent }) {
   const statusClasses = {
     available: "bg-emerald-100 text-emerald-700",
@@ -87,13 +101,20 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   const { properties: PROPERTIES, reload } = useData();
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
-  const [paymentReviewReasons, setPaymentReviewReasons] = useState({});
+  const [selectedPaymentReview, setSelectedPaymentReview] = useState(null);
+  const [rejectingPayment, setRejectingPayment] = useState(false);
+  const [paymentReviewReason, setPaymentReviewReason] = useState("");
   const [paymentBusyId, setPaymentBusyId] = useState("");
   const [paymentProofLinks, setPaymentProofLinks] = useState({});
   const [bookingSearch, setBookingSearch] = useState("");
   const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
   const [bookingDetail, setBookingDetail] = useState(null);
   const [bookingNotice, setBookingNotice] = useState(null);
+  const [roommateMatchRequests, setRoommateMatchRequests] = useState([]);
+  const [roommateCandidates, setRoommateCandidates] = useState([]);
+  const [selectedRoommateRequestId, setSelectedRoommateRequestId] = useState("");
+  const [selectedRoommateCandidateIds, setSelectedRoommateCandidateIds] = useState([]);
+  const [roommateMatchBusy, setRoommateMatchBusy] = useState(false);
   const [moveOutDate, setMoveOutDate] = useState("");
   const [moveOutBusy, setMoveOutBusy] = useState(false);
   const [listingSearch, setListingSearch] = useState("");
@@ -102,6 +123,12 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   const [listingPhotoFiles, setListingPhotoFiles] = useState([]);
   const [listingPhotoBusy, setListingPhotoBusy] = useState(false);
   const [listingPhotoError, setListingPhotoError] = useState("");
+  const [roomEditId, setRoomEditId] = useState("");
+  const [roomEditForm, setRoomEditForm] = useState(null);
+  const [roomEditMode, setRoomEditMode] = useState("");
+  const [roomEditPhotoFiles, setRoomEditPhotoFiles] = useState([]);
+  const [roomEditBusy, setRoomEditBusy] = useState(false);
+  const [roomEditError, setRoomEditError] = useState("");
   const [profilePhotoUrl, setProfilePhotoUrl] = useState(session?.landlord?.profile_photo_url || "");
   const [landlordVerification, setLandlordVerification] = useState(null);
   const [governmentIdFile, setGovernmentIdFile] = useState(null);
@@ -135,8 +162,47 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       return error.message;
     }
   }
+  async function refreshRoommateMatchRequests() {
+    try {
+      setRoommateMatchRequests(await fetchLandlordRoommateMatchRequests());
+    } catch (error) {
+      setBookingNotice({ title: "Roommate requests could not be loaded", message: error.message, error: true });
+    }
+  }
+  async function openRoommateCandidatePicker(request) {
+    setSelectedRoommateRequestId(request.id);
+    setRoommateCandidates([]);
+    setSelectedRoommateCandidateIds([]);
+    setRoommateMatchBusy(true);
+    try {
+      const candidates = await fetchRoommateMatchCandidates(request.id);
+      setRoommateCandidates(candidates);
+      setSelectedRoommateCandidateIds(candidates.filter((candidate) => candidate.isNominated).map((candidate) => candidate.studentId));
+    } catch (error) {
+      setBookingNotice({ title: "Matching candidates could not be loaded", message: error.message, error: true });
+      setSelectedRoommateRequestId("");
+    } finally {
+      setRoommateMatchBusy(false);
+    }
+  }
+  async function submitRoommateCandidates() {
+    if (selectedRoommateCandidateIds.length !== 3) {
+      setBookingNotice({ title: "Choose three candidates", message: "Select exactly three same-gender candidates for this student.", error: true });
+      return;
+    }
+    setRoommateMatchBusy(true);
+    try {
+      await saveRoommateMatchCandidates(selectedRoommateRequestId, selectedRoommateCandidateIds);
+      await refreshRoommateMatchRequests();
+      setBookingNotice({ title: "Candidates sent", message: "The student can now review and choose one of the three suggestions.", error: false });
+    } catch (error) {
+      setBookingNotice({ title: "Candidates could not be saved", message: error.message, error: true });
+    } finally {
+      setRoommateMatchBusy(false);
+    }
+  }
   async function reviewPayment(payment, status) {
-    const reason = paymentReviewReasons[payment.id] || "";
+    const reason = paymentReviewReason;
     if (status === "Failed" && !reason.trim()) {
       setBookingNotice({ title: "Rejection reason required", message: "Explain why this payment could not be accepted.", error: true });
       return;
@@ -151,11 +217,20 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
         message: `${payment.studentName}'s ${payment.paymentType.toLowerCase()} payment for ${payment.propertyTitle} was ${action}.${refreshError ? ` Payment list could not be refreshed: ${refreshError}` : ""}`,
         error: Boolean(refreshError),
       });
+      setSelectedPaymentReview(null);
+      setRejectingPayment(false);
+      setPaymentReviewReason("");
     } catch (error) {
       setBookingNotice({ title: "Payment review failed", message: error.message, error: true });
     } finally {
       setPaymentBusyId("");
     }
+  }
+  function closePaymentReview() {
+    if (paymentBusyId) return;
+    setSelectedPaymentReview(null);
+    setRejectingPayment(false);
+    setPaymentReviewReason("");
   }
   async function loadPaymentProof(payment) {
     try {
@@ -166,6 +241,10 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     }
   }
   async function updateBookingStatus(booking, status) {
+    if (status === "Confirmed" && booking.roommateInviteStatus === "Pending") {
+      setBookingNotice({ title: "Waiting for roommate", message: "The invited student must accept before a shared booking can be confirmed.", error: true });
+      return;
+    }
     try {
       await setBookingStatus(booking.id, status);
       const refreshError = await refreshBookings();
@@ -235,6 +314,11 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   useEffect(() => {
     setListingPhotoFiles([]);
     setListingPhotoError("");
+    setRoomEditId("");
+    setRoomEditForm(null);
+    setRoomEditMode("");
+    setRoomEditPhotoFiles([]);
+    setRoomEditError("");
   }, [listingDetail?.id]);
   function chooseListingPhotos(event) {
     const files = Array.from(event.target.files || []);
@@ -273,6 +357,134 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       setListingPhotoBusy(false);
     }
   }
+  function startRoomEdit(room) {
+    const amenityValues = Object.fromEntries(
+      Object.entries(AMENITY_LABELS).map(([value, label]) => [label, value])
+    );
+    setRoomEditMode("edit");
+    setRoomEditId(room.id);
+    setRoomEditForm({
+      roomNumber: room.name || "",
+      monthlyRate: String(room.price ?? ""),
+      securityDeposit: String(room.securityDeposit ?? 0),
+      capacity: String(room.capacity ?? 1),
+      amenities: (room.amenities || []).map((amenity) => amenityValues[amenity] || amenity),
+      images: [...(room.images || [])],
+    });
+    setRoomEditPhotoFiles([]);
+    setRoomEditError("");
+  }
+  function startRoomAdd() {
+    setRoomEditMode("add");
+    setRoomEditId("");
+    setRoomEditForm({
+      roomNumber: "",
+      monthlyRate: "",
+      securityDeposit: "0",
+      capacity: "1",
+      amenities: [],
+      images: [],
+    });
+    setRoomEditPhotoFiles([]);
+    setRoomEditError("");
+  }
+  function chooseRoomEditPhotos(event) {
+    const files = Array.from(event.target.files || []);
+    event.target.value = "";
+    if (!roomEditForm) return;
+    if (files.length + roomEditForm.images.length > 8) {
+      setRoomEditError("A room can have no more than 8 photos.");
+      setRoomEditPhotoFiles([]);
+      return;
+    }
+    const invalidFile = files.find((file) =>
+      !["image/jpeg", "image/png", "image/webp"].includes(file.type) || file.size > 8 * 1024 * 1024
+    );
+    if (invalidFile) {
+      setRoomEditError(`${invalidFile.name} must be a JPG, PNG, or WebP image no larger than 8 MB.`);
+      setRoomEditPhotoFiles([]);
+      return;
+    }
+    setRoomEditError("");
+    setRoomEditPhotoFiles(files);
+  }
+  async function saveRoomEdit() {
+    if (!listingDetail || !roomEditForm || (roomEditMode === "edit" && !roomEditId)) return;
+    const monthlyRate = Number(roomEditForm.monthlyRate);
+    const securityDeposit = roomEditForm.securityDeposit === "" ? 0 : Number(roomEditForm.securityDeposit);
+    const capacity = Number(roomEditForm.capacity);
+    if (
+      !roomEditForm.roomNumber.trim()
+      || roomEditForm.monthlyRate === ""
+      || !Number.isFinite(monthlyRate)
+      || monthlyRate < 0
+      || !Number.isFinite(securityDeposit)
+      || securityDeposit < 0
+      || !Number.isInteger(capacity)
+      || capacity < 1
+    ) {
+      setRoomEditError("Enter a room name, valid rates, and a capacity of at least one.");
+      return;
+    }
+
+    setRoomEditBusy(true);
+    setRoomEditError("");
+    try {
+      const addedImages = await uploadPublicImages(roomEditPhotoFiles, "listings");
+      const imageUrls = [...roomEditForm.images, ...addedImages];
+      const roomValues = {
+        roomNumber: roomEditForm.roomNumber.trim(),
+        monthlyRate,
+        securityDeposit,
+        capacity,
+        amenities: roomEditForm.amenities,
+        images: imageUrls,
+      };
+      let updatedRoomId = roomEditId;
+      if (roomEditMode === "add") {
+        updatedRoomId = await createRoom(listingDetail.id, roomValues);
+      } else {
+        await updateRoom(roomEditId, {
+          room_number: roomValues.roomNumber,
+          monthly_rate: roomValues.monthlyRate,
+          security_deposit: roomValues.securityDeposit,
+          capacity: roomValues.capacity,
+          amenities: roomValues.amenities,
+          image_urls: imageUrls,
+        });
+      }
+      const roomForView = {
+        id: updatedRoomId,
+        name: roomValues.roomNumber,
+        price: monthlyRate,
+        securityDeposit,
+        capacity,
+        status: "available",
+        amenities: roomEditForm.amenities.map((amenity) => AMENITY_LABELS[amenity] || amenity),
+        images: imageUrls,
+      };
+      setListingDetail((current) => {
+        if (!current) return current;
+        const updatedRooms = roomEditMode === "add"
+          ? [...current.rooms, roomForView]
+          : current.rooms.map((room) => room.id === roomEditId ? { ...room, ...roomForView } : room);
+        return {
+          ...current,
+          rooms: updatedRooms,
+          monthlyRent: Math.min(...updatedRooms.map((room) => Number(room.price) || 0)),
+        };
+      });
+      setRoomEditId("");
+      setRoomEditForm(null);
+      setRoomEditMode("");
+      setRoomEditPhotoFiles([]);
+      await reload();
+    } catch (error) {
+      setRoomEditError(error.message);
+    } finally {
+      setRoomEditBusy(false);
+    }
+  }
   async function submitLandlordVerification(event) {
     event.preventDefault();
     if (!governmentIdFile || !ownershipProofFile) {
@@ -295,12 +507,19 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     }
   }
   const [activeTab, setActiveTab] = useState("overview");
+  useEffect(() => {
+    if (activeTab === "roommates" && session?.landlordId) refreshRoommateMatchRequests();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, session?.landlordId]);
   const [selectedCalendarPropertyId, setSelectedCalendarPropertyId] = useState("");
   const [selectedRoom, setSelectedRoom] = useState("all");
   const [roomDetail, setRoomDetail] = useState(null);
   const myProperties = PROPERTIES.filter((p) => p.landlordId === String(session?.landlordId));
   const myBookings = bookings.filter((booking) => myProperties.some((property) => property.id === booking.propertyId));
   const myPayments = payments.filter((payment) => payment.landlordId === String(session?.landlordId));
+  const currentPaymentReview = selectedPaymentReview
+    ? payments.find((payment) => payment.id === selectedPaymentReview.id) || selectedPaymentReview
+    : null;
   const selectedCalendarProperty = myProperties.find((property) => property.id === selectedCalendarPropertyId) || myProperties[0];
   const calendarRooms = selectedCalendarProperty
     ? selectedCalendarProperty.rooms.map((room) => ({ ...room, propertyTitle: selectedCalendarProperty.title }))
@@ -323,6 +542,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     const query = bookingSearch.trim().toLowerCase();
     const matchesSearch = !query ||
       String(booking.studentName || "").toLowerCase().includes(query) ||
+      String(booking.roommateName || "").toLowerCase().includes(query) ||
       String(booking.propertyTitle || "").toLowerCase().includes(query) ||
       String(booking.roomName || "").toLowerCase().includes(query);
     return matchesSearch && (bookingStatusFilter === "all" || String(booking.status).toLowerCase() === bookingStatusFilter);
@@ -334,11 +554,12 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       String(property.address || "").toLowerCase().includes(query);
     return matchesSearch && (listingStatusFilter === "all" || property.status === listingStatusFilter);
   });
+  const roomBeingEdited = listingDetail?.rooms.find((room) => room.id === roomEditId);
   return (
-    <div className="landlord-dashboard max-w-6xl mx-auto px-4 sm:px-6 py-8">
+    <div className="landlord-dashboard dashboard-shell">
       {/* Header */}
-      <div className="flex items-center justify-between mb-8">
-        <div className="flex items-center gap-4">
+      <DashboardHeader
+        avatar={(
           <ProfilePhotoUpload
             name={displayName}
             photoUrl={profilePhotoUrl}
@@ -348,15 +569,15 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
               onProfilePhotoChange?.(url);
             }}
           />
-          <div>
-            <h1 className="font-display text-2xl font-semibold">{displayName}</h1>
-            <p className="text-[var(--muted-foreground)] text-sm">Landlord · {myProperties.length} propert{myProperties.length === 1 ? "y" : "ies"}</p>
-          </div>
-        </div>
-        <button onClick={() => setAddOpen(true)} className="flex items-center gap-2 px-3 py-2 sm:px-4 sm:py-2.5 bg-[var(--primary)] text-white rounded-xl text-xs sm:text-sm font-semibold hover:opacity-90 transition-opacity">
-          + Add Listing
-        </button>
-      </div>
+        )}
+        title={displayName}
+        description={`Landlord · ${myProperties.length} propert${myProperties.length === 1 ? "y" : "ies"}`}
+        action={(
+          <button onClick={() => setAddOpen(true)} className="flex items-center gap-2 rounded-xl bg-[var(--primary)] px-3 py-2 text-xs font-semibold text-white transition-opacity hover:opacity-90 sm:px-4 sm:py-2.5 sm:text-sm">
+            + Add Listing
+          </button>
+        )}
+      />
 
       {landlordVerification?.verification_status === "Approved" || (landlordVerification?.verification_status === "Pending" && verificationDocumentsStored) ? (
         <div className="mb-6 flex items-start gap-3 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
@@ -396,27 +617,17 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       )}
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-[var(--border)] mb-8 overflow-x-auto">
-        {[
-          ["overview", "Overview"],
-          ["listings", "My Listings"],
-          ["payments", "Payments"],
-          ["calendar", "Calendar"],
-          ["roommates", "Roommate Requests"],
-        ].map(([tab, label]) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
-              activeTab === tab
-                ? "border-[var(--primary)] text-[var(--primary)]"
-                : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <DashboardTabBar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        items={[
+          { id: "overview", label: "Overview" },
+          { id: "listings", label: "My Listings" },
+          { id: "payments", label: "Payments" },
+          { id: "calendar", label: "Calendar" },
+          { id: "roommates", label: "Roommate Requests" },
+        ]}
+      />
 
       {/* ── Overview ── */}
       {activeTab === "overview" && (
@@ -463,10 +674,21 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                     emptyMessage={myBookings.length ? "No bookings match your search or status filter." : "No booking requests for your listings."}
                     renderRow={(booking) => (
                       <tr key={booking.id} className="hover:bg-[var(--muted)]">
-                        <td className="px-4 py-3 font-medium">{booking.studentName}</td>
+                        <td className="px-4 py-3 font-medium">
+                          {booking.studentName}
+                          {booking.roommateStudentId && (
+                            <span className="block text-[10px] font-normal text-[var(--muted-foreground)]">
+                              + {booking.roommateName || "Matched roommate"}
+                            </span>
+                          )}
+                        </td>
                         <td className="px-4 py-3">{booking.propertyTitle} · {booking.roomName}</td>
                         <td className="px-4 py-3 text-xs">{booking.startDate} → {booking.endDate}</td>
-                        <td className="px-4 py-3">₱{Number(booking.monthlyRate).toLocaleString()}/mo</td>
+                        <td className="px-4 py-3">
+                          ₱{Number(booking.monthlyRate).toLocaleString()}/mo
+                          {booking.isShared && <span className="block text-[10px] text-[var(--muted-foreground)]">₱{Number(booking.monthlyShare).toLocaleString()} per student</span>}
+                          {booking.roommateInviteStatus === "Pending" && <span className="block text-[10px] text-amber-700">Roommate invitation pending</span>}
+                        </td>
                         <td className="px-4 py-3"><span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-xs font-semibold text-[var(--primary)]">{booking.status}</span></td>
                         <td className="px-4 py-3"><button type="button" onClick={() => { setBookingDetail(booking); setMoveOutDate(todayDate); }} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Review</button></td>
                       </tr>
@@ -641,22 +863,17 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                     </td>
                     <td className="px-3 py-3">
                       {payment.status === "Pending" ? (
-                        <div className="min-w-40 space-y-2">
-                          <button type="button" onClick={() => reviewPayment(payment, "Verified")} disabled={paymentBusyId === payment.id} className="w-full rounded-lg bg-emerald-600 px-2.5 py-1.5 text-xs font-semibold text-white disabled:opacity-50">
-                            {paymentBusyId === payment.id ? "Saving…" : "Accept"}
-                          </button>
-                          <textarea
-                            value={paymentReviewReasons[payment.id] || ""}
-                            onChange={(event) => setPaymentReviewReasons((current) => ({ ...current, [payment.id]: event.target.value }))}
-                            placeholder="Reason required to reject"
-                            aria-label={`Rejection reason for ${payment.studentName}'s payment`}
-                            rows={2}
-                            className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-2 py-1.5 text-xs"
-                          />
-                          <button type="button" onClick={() => reviewPayment(payment, "Failed")} disabled={paymentBusyId === payment.id || !(paymentReviewReasons[payment.id] || "").trim()} className="w-full rounded-lg bg-red-600 px-2.5 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40">
-                            Reject payment
-                          </button>
-                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedPaymentReview(payment);
+                            setRejectingPayment(false);
+                            setPaymentReviewReason("");
+                          }}
+                          className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]"
+                        >
+                          Review
+                        </button>
                       ) : <span className="text-xs text-[var(--muted-foreground)]">Reviewed</span>}
                     </td>
                   </tr>
@@ -667,16 +884,132 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
         </div>
       )}
 
-      {/* Roommate request messaging */}
+      {/* Roommate matching requests */}
       {activeTab === "roommates" && (
-        <div className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-6">
-          <div>
-            <h2 className="font-display text-xl font-semibold">Roommate Requests</h2>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Roommate requests are sent as direct messages and are not tracked as separate records.</p>
+        <div className="space-y-5">
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Roommate Matching</h2>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                Review compatibility habits and suggest exactly three candidates of the requesting student’s gender.
+              </p>
+            </div>
+            <button type="button" onClick={refreshRoommateMatchRequests} className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-semibold">
+              Refresh requests
+            </button>
           </div>
-          <button type="button" onClick={() => onNavigate("chat")} className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white">
-            Open Messages
-          </button>
+          {roommateMatchRequests.length === 0 ? (
+            <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-sm text-[var(--muted-foreground)]">
+              There are no active roommate requests.
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {roommateMatchRequests.map((request) => (
+                <article key={request.id} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="flex items-center gap-3">
+                      {request.profilePhotoUrl
+                        ? <img src={request.profilePhotoUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
+                        : <div aria-hidden="true" className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--secondary)] font-semibold text-[var(--primary)]">{request.name?.charAt(0) || "S"}</div>}
+                      <div>
+                        <h3 className="font-semibold">{request.name}</h3>
+                        <p className="text-xs text-[var(--muted-foreground)]">{request.gender} only{request.academicYear ? ` · ${request.academicYear}` : ""}</p>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => selectedRoommateRequestId === request.id
+                        ? setSelectedRoommateRequestId("")
+                        : openRoommateCandidatePicker(request)}
+                      disabled={roommateMatchBusy}
+                      className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                    >
+                      {selectedRoommateRequestId === request.id ? "Close candidates" : `Choose candidates (${request.candidateCount}/3 selected)`}
+                    </button>
+                  </div>
+                  <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {[
+                      ["Sleep", ROOMMATE_PREFERENCE_LABELS.sleep[request.preferences.sleep]],
+                      ["Study", ROOMMATE_PREFERENCE_LABELS.study[request.preferences.study]],
+                      ["Cleanliness", ROOMMATE_PREFERENCE_LABELS.cleanliness[request.preferences.cleanliness]],
+                      ["Guests", ROOMMATE_PREFERENCE_LABELS.guests[request.preferences.guests]],
+                    ].map(([label, value]) => (
+                      <div key={label} className="rounded-xl bg-[var(--muted)] p-3">
+                        <p className="text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{label}</p>
+                        <p className="mt-1 text-xs font-medium">{value || "Not answered"}</p>
+                      </div>
+                    ))}
+                  </div>
+
+                  {selectedRoommateRequestId === request.id && (
+                    <div className="mt-5 border-t border-[var(--border)] pt-4">
+                      <p className="mb-3 text-xs text-[var(--muted-foreground)]">
+                        Choose three candidates. The compatibility score compares the four saved quiz answers; only same-gender students with active requests are listed.
+                      </p>
+                      {roommateCandidates.length === 0 ? (
+                        <p className="rounded-xl bg-[var(--muted)] p-4 text-sm text-[var(--muted-foreground)]">
+                          There are not yet three eligible same-gender students with completed compatibility quizzes.
+                        </p>
+                      ) : (
+                        <>
+                          {roommateCandidates.length < 3 && (
+                            <p className="mb-3 text-xs text-amber-700">
+                              At least three eligible candidates are needed. Currently available: {roommateCandidates.length}.
+                            </p>
+                          )}
+                          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            {roommateCandidates.map((candidate) => {
+                              const selected = selectedRoommateCandidateIds.includes(candidate.studentId);
+                              const limitReached = selectedRoommateCandidateIds.length >= 3 && !selected;
+                              return (
+                                <label
+                                  key={candidate.studentId}
+                                  className={`flex cursor-pointer gap-3 rounded-xl border p-4 ${selected ? "border-[var(--primary)] bg-[var(--secondary)]" : "border-[var(--border)]"} ${limitReached ? "cursor-not-allowed opacity-50" : ""}`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={selected}
+                                    disabled={limitReached || roommateMatchBusy}
+                                    onChange={() => setSelectedRoommateCandidateIds((current) => selected
+                                      ? current.filter((id) => id !== candidate.studentId)
+                                      : [...current, candidate.studentId])}
+                                    className="mt-1 accent-[var(--primary)]"
+                                  />
+                                  <div className="min-w-0 flex-1">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div>
+                                        <p className="text-sm font-semibold">{candidate.name}</p>
+                                        <p className="text-[10px] text-[var(--muted-foreground)]">{candidate.gender}{candidate.academicYear ? ` · ${candidate.academicYear}` : ""}</p>
+                                      </div>
+                                      <span className="rounded-full bg-emerald-100 px-2 py-1 text-xs font-bold text-emerald-800">{candidate.compatibilityScore}%</span>
+                                    </div>
+                                    <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">
+                                      {ROOMMATE_PREFERENCE_LABELS.sleep[candidate.preferences.sleep]} · {ROOMMATE_PREFERENCE_LABELS.study[candidate.preferences.study]} · {ROOMMATE_PREFERENCE_LABELS.cleanliness[candidate.preferences.cleanliness]} · {ROOMMATE_PREFERENCE_LABELS.guests[candidate.preferences.guests]}
+                                    </p>
+                                  </div>
+                                </label>
+                              );
+                            })}
+                          </div>
+                          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                            <p className="text-xs text-[var(--muted-foreground)]">{selectedRoommateCandidateIds.length} of 3 candidates selected</p>
+                            <button
+                              type="button"
+                              onClick={submitRoommateCandidates}
+                              disabled={roommateMatchBusy || selectedRoommateCandidateIds.length !== 3}
+                              className="rounded-xl bg-[var(--primary)] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                            >
+                              {roommateMatchBusy ? "Saving…" : "Send 3 candidates to student"}
+                            </button>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </article>
+              ))}
+            </div>
+          )}
         </div>
       )}
 
@@ -700,6 +1033,16 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 ["Current billing cycle ends", bookingDetail.endDate],
                 ...(bookingDetail.actualEndDate ? [["Room released from", bookingDetail.actualEndDate]] : []),
                 ["Monthly rent", `₱${Number(bookingDetail.monthlyRate).toLocaleString()}`],
+                ...(bookingDetail.roommateStudentId ? [["Roommate", `${bookingDetail.roommateName || "Matched student"} · ${bookingDetail.roommateInviteStatus || "Invited"}`]] : []),
+                ...(bookingDetail.isShared ? [
+                  ["Rent per student", `₱${Number(bookingDetail.monthlyShare).toLocaleString()}/mo`],
+                ] : bookingDetail.hasRoommate ? [
+                  ["Rent sharing starts", bookingDetail.roommateStartDate],
+                  ["Rent per student after start", `₱${Number(bookingDetail.monthlyRate / 2).toLocaleString()}/mo`],
+                ] : []),
+                ...(bookingDetail.hasRoommate ? [
+                  ["Security deposit per student", `₱${Number(bookingDetail.securityDepositShare).toLocaleString()}`],
+                ] : []),
                 ["Request received", bookingDetail.createdAt || "—"],
               ].map(([label, value]) => <div key={label}><div className="text-xs text-[var(--muted-foreground)]">{label}</div><div className="mt-1 text-sm font-medium">{value}</div></div>)}
             </div>
@@ -709,7 +1052,14 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 {bookingDetail.status === "Pending" && (
                   <>
                     <button type="button" onClick={() => updateBookingStatus(bookingDetail, "Cancelled")} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Decline</button>
-                    <button type="button" onClick={() => updateBookingStatus(bookingDetail, "Confirmed")} className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white">Confirm booking</button>
+                    <button
+                      type="button"
+                      onClick={() => updateBookingStatus(bookingDetail, "Confirmed")}
+                      disabled={bookingDetail.roommateInviteStatus === "Pending"}
+                      className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      {bookingDetail.roommateInviteStatus === "Pending" ? "Waiting for roommate" : "Confirm booking"}
+                    </button>
                   </>
                 )}
                 {bookingDetail.status === "Confirmed" && bookingDetail.startDate > todayDate && (
@@ -793,14 +1143,25 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 </div>
               </section>
               <section>
-                <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Rooms</h4>
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Rooms</h4>
+                  {!roomEditForm && (
+                    <button
+                      type="button"
+                      onClick={startRoomAdd}
+                      className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]"
+                    >
+                      + Add room
+                    </button>
+                  )}
+                </div>
                 <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
                   <table className="w-full min-w-[42rem] text-sm">
-                    <thead className="bg-[var(--muted)]"><tr>{["Room", "Monthly rent", "Capacity", "Availability", "Photos", "Amenities"].map((heading) => <th key={heading} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                    <thead className="bg-[var(--muted)]"><tr>{["Room", "Monthly rent", "Capacity", "Availability", "Photos", "Amenities", "Actions"].map((heading) => <th key={heading} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
                     <PaginatedTableBody
                       rows={listingDetail.rooms}
-                      columns={6}
-                      resetKey={listingDetail.id}
+                      columns={7}
+                      resetKey={`${listingDetail.id}|${listingDetail.rooms.length}`}
                       emptyMessage="No rooms have been added to this listing."
                       renderRow={(room) => (
                         <tr key={room.id}>
@@ -810,11 +1171,165 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                           <td className="px-3 py-2 capitalize">{room.status}</td>
                           <td className="px-3 py-2">{room.images?.length ? <div className="flex gap-1">{room.images.slice(0, 3).map((image, index) => <img key={`${room.id}-${image}`} src={image} alt={`${room.name} photo ${index + 1}`} className="h-9 w-12 rounded object-cover" />)}</div> : "—"}</td>
                           <td className="px-3 py-2 text-xs">{room.amenities?.join(", ") || "—"}</td>
+                          <td className="px-3 py-2">
+                            <button
+                              type="button"
+                              onClick={() => startRoomEdit(room)}
+                              disabled={roomEditBusy || Boolean(roomEditForm)}
+                              className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)] disabled:opacity-50"
+                            >
+                              Edit
+                            </button>
+                          </td>
                         </tr>
                       )}
                     />
                   </table>
                 </div>
+                {roomEditForm && (
+                  <section className="mt-4 space-y-4 rounded-xl border border-[var(--border)] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <h5 className="text-sm font-semibold">
+                          {roomEditMode === "add" ? "Add room" : `Edit ${roomBeingEdited?.name || "room"}`}
+                        </h5>
+                        {roomEditMode === "edit" && (
+                          <p className="mt-1 text-xs text-[var(--muted-foreground)]">Rate changes apply to future bookings and billing cycles; existing invoices are unchanged.</p>
+                        )}
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setRoomEditId("");
+                          setRoomEditForm(null);
+                          setRoomEditMode("");
+                          setRoomEditPhotoFiles([]);
+                          setRoomEditError("");
+                        }}
+                        disabled={roomEditBusy}
+                        className="text-xs font-medium text-[var(--muted-foreground)] hover:underline disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <label className="text-xs font-medium">
+                        Room name/number
+                        <input
+                          value={roomEditForm.roomNumber}
+                          onChange={(event) => setRoomEditForm((current) => ({ ...current, roomNumber: event.target.value }))}
+                          disabled={roomEditBusy}
+                          className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="text-xs font-medium">
+                        Capacity
+                        <input
+                          type="number"
+                          min="1"
+                          value={roomEditForm.capacity}
+                          onChange={(event) => setRoomEditForm((current) => ({ ...current, capacity: event.target.value }))}
+                          disabled={roomEditBusy}
+                          className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="text-xs font-medium">
+                        Monthly rent (₱)
+                        <input
+                          type="number"
+                          min="0"
+                          value={roomEditForm.monthlyRate}
+                          onChange={(event) => setRoomEditForm((current) => ({ ...current, monthlyRate: event.target.value }))}
+                          disabled={roomEditBusy}
+                          className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                        />
+                      </label>
+                      <label className="text-xs font-medium">
+                        Security deposit (₱)
+                        <input
+                          type="number"
+                          min="0"
+                          value={roomEditForm.securityDeposit}
+                          onChange={(event) => setRoomEditForm((current) => ({ ...current, securityDeposit: event.target.value }))}
+                          disabled={roomEditBusy}
+                          className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                        />
+                      </label>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-semibold">Room amenities</p>
+                      <div className="flex flex-wrap gap-2">
+                        {AMENITY_ENUM.map((amenity) => (
+                          <button
+                            key={amenity}
+                            type="button"
+                            disabled={roomEditBusy}
+                            onClick={() => setRoomEditForm((current) => ({
+                              ...current,
+                              amenities: current.amenities.includes(amenity)
+                                ? current.amenities.filter((item) => item !== amenity)
+                                : [...current.amenities, amenity],
+                            }))}
+                            className={`rounded-full border px-3 py-1.5 text-xs font-medium disabled:opacity-50 ${
+                              roomEditForm.amenities.includes(amenity)
+                                ? "border-[var(--primary)] bg-[var(--primary)] text-white"
+                                : "border-[var(--border)] bg-[var(--muted)]"
+                            }`}
+                          >
+                            {AMENITY_LABELS[amenity]}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    <div>
+                      <p className="mb-2 text-xs font-semibold">Room photos (up to 8)</p>
+                      {roomEditForm.images.length > 0 && (
+                        <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
+                          {roomEditForm.images.map((image, index) => (
+                            <div key={`${image}-${index}`} className="relative overflow-hidden rounded-lg border border-[var(--border)]">
+                              <img src={image} alt={`${roomBeingEdited?.name || "Room"} photo ${index + 1}`} className="h-24 w-full object-cover" />
+                              <button
+                                type="button"
+                                disabled={roomEditBusy}
+                                onClick={() => setRoomEditForm((current) => ({
+                                  ...current,
+                                  images: current.images.filter((_, imageIndex) => imageIndex !== index),
+                                }))}
+                                className="absolute right-1 top-1 rounded-full bg-black/70 px-2 py-1 text-[10px] text-white disabled:opacity-50"
+                              >
+                                Remove
+                              </button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <input
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        multiple
+                        onChange={chooseRoomEditPhotos}
+                        disabled={roomEditBusy || roomEditForm.images.length >= 8}
+                        className="w-full text-xs"
+                      />
+                      {roomEditPhotoFiles.length > 0 && (
+                        <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                          {roomEditPhotoFiles.length} new photo{roomEditPhotoFiles.length === 1 ? "" : "s"} selected.
+                        </p>
+                      )}
+                    </div>
+                    {roomEditError && <p role="alert" className="text-sm text-red-600">{roomEditError}</p>}
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={saveRoomEdit}
+                        disabled={roomEditBusy}
+                        className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                      >
+                        {roomEditBusy ? "Saving…" : roomEditMode === "add" ? "Add room" : "Save room"}
+                      </button>
+                    </div>
+                  </section>
+                )}
               </section>
               <section className="rounded-xl border border-[var(--border)] bg-[var(--muted)] p-4">
                 <h4 className="text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">Latest safety inspection</h4>
@@ -833,6 +1348,132 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
               <button type="button" onClick={() => setListingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
               <button type="button" onClick={() => { setListingDetail(null); setActiveTab("calendar"); setSelectedCalendarPropertyId(listingDetail.id); setSelectedRoom("all"); }} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white">Open calendar</button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {selectedPaymentReview && currentPaymentReview && (
+        <div
+          className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm"
+          role="presentation"
+          onClick={(event) => {
+            if (event.target === event.currentTarget) closePaymentReview();
+          }}
+        >
+          <div
+            className="w-full max-w-lg space-y-5 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="payment-review-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 id="payment-review-title" className="font-display text-xl font-semibold">Review payment</h3>
+                <p className="mt-1 text-sm text-[var(--muted-foreground)]">
+                  {currentPaymentReview.studentName} · {currentPaymentReview.propertyTitle} · {currentPaymentReview.roomName}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={closePaymentReview}
+                disabled={Boolean(paymentBusyId)}
+                aria-label="Close payment review"
+                className="text-xl text-[var(--muted-foreground)] disabled:opacity-50"
+              >
+                ×
+              </button>
+            </div>
+
+            <dl className="grid grid-cols-2 gap-3 rounded-xl bg-[var(--muted)] p-4 text-sm">
+              <div>
+                <dt className="text-xs text-[var(--muted-foreground)]">Payment type</dt>
+                <dd className="font-medium">{currentPaymentReview.paymentType}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--muted-foreground)]">Amount</dt>
+                <dd className="font-semibold">₱{currentPaymentReview.amount.toLocaleString()}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--muted-foreground)]">Method</dt>
+                <dd className="font-medium">{currentPaymentReview.paymentMethod || "—"}</dd>
+              </div>
+              <div>
+                <dt className="text-xs text-[var(--muted-foreground)]">Submitted</dt>
+                <dd className="font-medium">{currentPaymentReview.paymentDate?.slice(0, 10) || "—"}</dd>
+              </div>
+              <div className="col-span-2">
+                <dt className="text-xs text-[var(--muted-foreground)]">Receipt</dt>
+                <dd className="mt-1">
+                  {paymentProofLinks[currentPaymentReview.id]
+                    ? <a href={paymentProofLinks[currentPaymentReview.id]} target="_blank" rel="noreferrer" className="font-semibold text-[var(--primary)] underline">Open payment proof</a>
+                    : <button type="button" onClick={() => loadPaymentProof(currentPaymentReview)} className="text-xs font-semibold text-[var(--primary)] underline">View payment proof</button>}
+                </dd>
+              </div>
+            </dl>
+
+            {currentPaymentReview.status !== "Pending" ? (
+              <p className="rounded-xl bg-[var(--muted)] p-3 text-sm text-[var(--muted-foreground)]">
+                This payment has already been reviewed as {currentPaymentReview.status.toLowerCase()}.
+              </p>
+            ) : rejectingPayment ? (
+              <div className="space-y-3">
+                <label className="block text-sm font-medium" htmlFor="payment-rejection-reason">
+                  Reason for rejection
+                  <textarea
+                    id="payment-rejection-reason"
+                    value={paymentReviewReason}
+                    onChange={(event) => setPaymentReviewReason(event.target.value)}
+                    placeholder="Explain why this payment cannot be accepted."
+                    rows={3}
+                    disabled={paymentBusyId === currentPaymentReview.id}
+                    className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                  />
+                </label>
+                <div className="flex justify-end gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setRejectingPayment(false);
+                      setPaymentReviewReason("");
+                    }}
+                    disabled={Boolean(paymentBusyId)}
+                    className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold disabled:opacity-50"
+                  >
+                    Back
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => reviewPayment(currentPaymentReview, "Failed")}
+                    disabled={paymentBusyId === currentPaymentReview.id || !paymentReviewReason.trim()}
+                    className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {paymentBusyId === currentPaymentReview.id ? "Saving…" : "Confirm rejection"}
+                  </button>
+                </div>
+              </div>
+            ) : currentPaymentReview.status === "Pending" && (
+              <div className="flex justify-end gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setRejectingPayment(true);
+                    setPaymentReviewReason("");
+                  }}
+                  className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white"
+                >
+                  Reject payment
+                </button>
+                <button
+                  type="button"
+                  onClick={() => reviewPayment(currentPaymentReview, "Verified")}
+                  disabled={paymentBusyId === currentPaymentReview.id}
+                  className="rounded-xl bg-emerald-600 px-4 py-2 text-xs font-semibold text-white disabled:opacity-50"
+                >
+                  {paymentBusyId === currentPaymentReview.id ? "Saving…" : "Accept payment"}
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}

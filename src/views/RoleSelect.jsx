@@ -52,7 +52,7 @@ export default function RoleSelect({ onNavigate }) {
 
         {/* Content */}
         <div className="relative">
-          <Logo variant="light" height={56} />
+          <Logo variant="light" height={72} />
         </div>
 
         <div className="relative space-y-6">
@@ -80,7 +80,7 @@ export default function RoleSelect({ onNavigate }) {
       <div className="flex-1 flex flex-col items-center justify-center px-6 py-12 bg-[var(--background)]">
         {/* Mobile logo */}
         <div className="lg:hidden mb-8">
-          <Logo variant="dark" height={48} />
+          <Logo variant="dark" height={64} />
         </div>
 
         <div className="w-full max-w-md">

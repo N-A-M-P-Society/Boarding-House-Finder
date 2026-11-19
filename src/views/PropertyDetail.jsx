@@ -2,7 +2,8 @@ import { useEffect, useState } from "react";
 import { useData } from "../context/DataContext.jsx";
 import LeafletMap from "../components/LeafletMap.jsx";
 import ImageLightbox from "../components/ImageLightbox.jsx";
-import { createBooking, fetchPublicRoomBookings, saveListing } from "../lib/api.js";
+import BookRoomButton from "../components/BookRoomButton.jsx";
+import { fetchMyRoommateMatchRequest, fetchPublicRoomBookings, saveListing } from "../lib/api.js";
 
 const ACTIVE_BOOKING_STATUSES = new Set(["Pending", "Confirmed"]);
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -31,15 +32,39 @@ function bookingForDate(roomId, date, bookings) {
   );
 }
 
-function hasBookingConflict(roomId, startDate, endDate, bookings) {
-  if (!roomId || !startDate || !endDate) return false;
-  return bookings.some((booking) =>
+function findBookingConflict(roomId, startDate, endDate, bookings) {
+  if (!roomId || !startDate || !endDate) return null;
+  return bookings.find((booking) =>
     booking.roomId === String(roomId) &&
     ACTIVE_BOOKING_STATUSES.has(booking.status) &&
     (booking.openEnded
       ? endDate > booking.startDate
       : startDate < booking.endDate && endDate > booking.startDate)
-  );
+  ) || null;
+}
+
+function findShareableBooking(room, bookings) {
+  if (!room || room.capacity !== 2) return null;
+  return bookings.find((booking) =>
+    booking.roomId === String(room.id) &&
+    ACTIVE_BOOKING_STATUSES.has(booking.status) &&
+    booking.occupiedSlots === 1 &&
+    (booking.status === "Pending" ? booking.startDate : booking.endDate) >= formatLocalDate(new Date())
+  ) || null;
+}
+
+function shareStartDate(booking) {
+  return booking.status === "Pending" ? booking.startDate : booking.endDate;
+}
+
+function findShareableBookingForDate(room, startDate, bookings) {
+  if (!startDate || !room || room.capacity !== 2) return null;
+  return bookings.find((booking) =>
+    booking.roomId === String(room.id) &&
+    ACTIVE_BOOKING_STATUSES.has(booking.status) &&
+    booking.occupiedSlots === 1 &&
+    shareStartDate(booking) === startDate
+  ) || null;
 }
 
 function RoomAvailabilityCalendar({ room, bookings, month, onMonthChange, availabilityError }) {
@@ -57,14 +82,16 @@ function RoomAvailabilityCalendar({ room, bookings, month, onMonthChange, availa
 
     const date = formatLocalDate(new Date(year, monthIndex, day));
     const booking = bookingForDate(room.id, date, bookings);
+    const hasOpenSpot = room.capacity === 2 && booking?.occupiedSlots === 1;
     const status = booking
-      ? booking.status === "Confirmed" ? "Booked" : "Reserved"
+      ? hasOpenSpot ? "Shared spot" : booking.status === "Confirmed" ? "Booked" : "Reserved"
       : date < today ? "Past" : availabilityError ? "Unknown" : room.status === "available" ? "Available" : "Unavailable";
 
     return { day, date, status, booking };
   });
   const statusStyles = {
     Available: "border-emerald-200 bg-emerald-50 text-emerald-800",
+    "Shared spot": "border-violet-200 bg-violet-50 text-violet-800",
     Reserved: "border-amber-200 bg-amber-50 text-amber-800",
     Booked: "border-red-200 bg-red-50 text-red-800",
     Unavailable: "border-[var(--border)] bg-[var(--muted)] text-[var(--muted-foreground)]",
@@ -96,7 +123,7 @@ function RoomAvailabilityCalendar({ room, bookings, month, onMonthChange, availa
         ) : <div key={`empty-${index}`} aria-hidden="true" />)}
       </div>
       <div className="flex flex-wrap gap-x-4 gap-y-2 text-[10px]">
-        {["Available", "Reserved", "Booked", "Unavailable", ...(availabilityError ? ["Unknown"] : [])].map((status) => (
+        {["Available", "Shared spot", "Reserved", "Booked", "Unavailable", ...(availabilityError ? ["Unknown"] : [])].map((status) => (
           <span key={status} className="flex items-center gap-1.5">
             <span className={`h-3 w-3 rounded border ${statusStyles[status]}`} />
             {status}
@@ -107,17 +134,19 @@ function RoomAvailabilityCalendar({ room, bookings, month, onMonthChange, availa
   );
 }
 
-export default function PropertyDetail({ propertyId, onNavigate, onStartChat, onBookingCreated, userRole, session, onRequireLogin }) {
+export default function PropertyDetail({ propertyId, onNavigate, onStartChat, onBookingCreated, onRoommateCompatibility, userRole, session, onRequireLogin }) {
   const { properties: PROPERTIES, gates, campus, reload } = useData();
   const property = PROPERTIES.find((p) => p.id === propertyId);
   const [bookRoom, setBookRoom] = useState("");
   const [startDate, setStartDate] = useState("");
   const [bookMsg, setBookMsg] = useState({ type: "", text: "" });
-  const [busy, setBusy] = useState(false);
   const [availabilityBookings, setAvailabilityBookings] = useState([]);
   const [availabilityLoading, setAvailabilityLoading] = useState(false);
   const [availabilityError, setAvailabilityError] = useState("");
   const [availabilityRoomId, setAvailabilityRoomId] = useState("");
+  const [roommateMatchRequest, setRoommateMatchRequest] = useState(null);
+  const [roommateMatchError, setRoommateMatchError] = useState("");
+  const [shareWithMatchedRoommate, setShareWithMatchedRoommate] = useState(false);
   const [availabilityMonth, setAvailabilityMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
   const [lightbox, setLightbox] = useState(null);
   const [activeImg, setActiveImg] = useState(0);
@@ -143,31 +172,67 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
     };
   }, [property?.id]);
 
+  useEffect(() => {
+    if (userRole !== "student" || !session?.studentId) {
+      setRoommateMatchRequest(null);
+      return;
+    }
+    let active = true;
+    setRoommateMatchError("");
+    fetchMyRoommateMatchRequest()
+      .then((request) => {
+        if (active) setRoommateMatchRequest(request);
+      })
+      .catch((error) => {
+        if (active) setRoommateMatchError(error.message);
+      });
+    return () => {
+      active = false;
+    };
+  }, [session?.studentId, userRole]);
+
   const today = formatLocalDate(new Date());
   const selectedRoom = property?.rooms.find((room) => room.id === bookRoom);
   const endDate = startDate ? nextBillingDate(startDate) : "";
-  const selectedRoomConflict = hasBookingConflict(bookRoom, startDate, endDate, availabilityBookings);
-  async function handleBook() {
-    if (!bookRoom || !startDate) return setBookMsg({ type: "error", text: "Choose a room and move-in date." });
-    if (startDate < today) return setBookMsg({ type: "error", text: "Choose today or a future check-in date." });
-    if (selectedRoom?.status !== "available") return setBookMsg({ type: "error", text: "This room is not currently listed as available." });
-    if (selectedRoomConflict) return setBookMsg({ type: "error", text: "This room is already reserved or occupied for that move-in date." });
-    setBusy(true);
+  const selectedRoomBookingConflict = findBookingConflict(bookRoom, startDate, endDate, availabilityBookings);
+  const selectedShareBooking = findShareableBookingForDate(selectedRoom, startDate, availabilityBookings);
+  const selectedRoomConflict = Boolean(selectedRoomBookingConflict && !selectedShareBooking);
+  const selectedRoomUnavailable = Boolean(
+    selectedRoom &&
+    selectedRoom.status !== "available" &&
+    !selectedShareBooking
+  );
+  async function refreshAfterBooking({ isRoommateJoinRequest = false } = {}) {
+    setShareWithMatchedRoommate(false);
+    const refreshErrors = [];
+
     try {
-      await createBooking({ studentId: session.studentId, roomId: bookRoom, startDate, endDate });
-      setBookMsg({ type: "ok", text: "Booking request sent. The landlord must confirm it before payment can be submitted." });
       await reload();
+    } catch (error) {
+      refreshErrors.push(error.message);
+    }
+
+    try {
+      setAvailabilityBookings(await fetchPublicRoomBookings(property.id));
+      setAvailabilityError("");
+    } catch (error) {
+      setAvailabilityError(error.message);
+      refreshErrors.push(error.message);
+    }
+
+    if (!isRoommateJoinRequest) {
       try {
-        setAvailabilityBookings(await fetchPublicRoomBookings(property.id));
-        setAvailabilityError("");
+        await onBookingCreated?.();
       } catch (error) {
-        setAvailabilityError(error.message);
+        refreshErrors.push(error.message);
       }
-      onBookingCreated?.();
-    } catch (e) {
-      setBookMsg({ type: "error", text: e.message });
-    } finally {
-      setBusy(false);
+    }
+
+    if (refreshErrors.length > 0) {
+      setBookMsg({
+        type: "error",
+        text: `Booking request sent, but some details could not refresh: ${refreshErrors.join("; ")}`,
+      });
     }
   }
   async function handleSave() {
@@ -185,6 +250,7 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
     setActiveImg(0);
     setActiveTab("overview");
     setLightbox(null);
+    setShareWithMatchedRoommate(false);
   }, [propertyId]);
   useEffect(() => {
     if (!property || activeTab !== "overview" || lightbox) return;
@@ -354,18 +420,6 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                     <LeafletMap properties={[property]} campus={campus} gates={gates} radiusMeters={800} activeId={property.id} />
                   </div>
                 </div>
-                {lightbox && (
-                  <ImageLightbox
-                    images={lightbox.images}
-                    initialIndex={lightbox.index}
-                    title={lightbox.title}
-                    onClose={() => setLightbox(null)}
-                    onIndexChange={(index) => {
-                      setLightbox((current) => current && { ...current, index });
-                      if (lightbox.isPropertyGallery) setActiveImg(index);
-                    }}
-                  />
-                )}
               </div>
             )}
 
@@ -578,9 +632,12 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                 <span className={`font-semibold ${safetyColor}`}>⚡ {property.safetyScore}/10</span>
               </div>
               <div className="flex justify-between">
-                <span className="text-[var(--muted-foreground)]">Available Rooms</span>
+                <span className="text-[var(--muted-foreground)]">Rooms with space</span>
                 <span className="font-medium">
-                  {property.rooms.filter((room) => room.status === "available" && !bookingForDate(room.id, today, availabilityBookings)).length}/{property.rooms.length}
+                  {property.rooms.filter((room) =>
+                    (room.status === "available" && !bookingForDate(room.id, today, availabilityBookings))
+                    || findShareableBooking(room, availabilityBookings)
+                  ).length}/{property.rooms.length}
                 </span>
               </div>
             </div>
@@ -590,17 +647,25 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                 <>
                   <select
                     value={bookRoom}
-                    onChange={(e) => setBookRoom(e.target.value)}
+                    onChange={(e) => {
+                      const roomId = e.target.value;
+                      const room = property.rooms.find((item) => item.id === roomId);
+                      const openSpot = findShareableBooking(room, availabilityBookings);
+                      setBookRoom(roomId);
+                      setStartDate(openSpot ? shareStartDate(openSpot) : "");
+                      setShareWithMatchedRoommate(false);
+                    }}
                     aria-label="Select an available room"
                     className="w-full px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm"
                   >
                     <option value="">Select a room…</option>
                     {property.rooms.map((room) => {
-                      const hasDateConflict = hasBookingConflict(room.id, startDate, endDate, availabilityBookings);
-                      const unavailable = room.status !== "available" || hasDateConflict;
+                      const hasDateConflict = Boolean(findBookingConflict(room.id, startDate, endDate, availabilityBookings));
+                      const openSpot = findShareableBooking(room, availabilityBookings);
+                      const unavailable = (room.status !== "available" && !openSpot) || (hasDateConflict && !openSpot);
                       return (
                         <option key={room.id} value={room.id} disabled={unavailable}>
-                          {room.name} — ₱{room.price.toLocaleString()}/mo{hasDateConflict ? " · booked for selected dates" : room.status !== "available" ? " · unavailable" : ""}
+                          {room.name} — ₱{room.price.toLocaleString()}/mo{openSpot ? " · one roommate spot" : hasDateConflict ? " · booked for selected dates" : room.status !== "available" ? " · unavailable" : ""}
                         </option>
                       );
                     })}
@@ -617,14 +682,93 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                   </label>
                   {selectedRoomConflict && <p role="alert" className="text-xs text-red-600">This room is reserved or occupied for the selected move-in date.</p>}
                   {availabilityError && <p role="status" className="text-xs text-amber-800">Could not load the live calendar. The server will still check for date conflicts when you submit.</p>}
+                  {selectedShareBooking && (
+                    <div className="space-y-2 rounded-xl border border-violet-200 bg-violet-50 p-3 text-violet-950">
+                      <p className="text-xs font-semibold">This room has one resident and one spot available.</p>
+                      <p className="text-xs">
+                        Sharing can start {shareStartDate(selectedShareBooking)}. The resident must accept, and you must be mutually matched through compatibility first.
+                      </p>
+                      {selectedShareBooking.status === "Confirmed" && (
+                        <p className="text-[10px]">
+                          From that date you pay about ₱{(selectedRoom.price / 2).toLocaleString()}/mo. Your half of the deposit will be billed; any verified excess deposit paid by the resident becomes a future rent credit.
+                        </p>
+                      )}
+                      {selectedShareBooking.status === "Pending" && (
+                        <p className="text-[10px]">
+                          If the landlord confirms, rent and the security deposit will be split equally: about ₱{(selectedRoom.price / 2).toLocaleString()}/mo rent and ₱{(selectedRoom.securityDeposit / 2).toLocaleString()} deposit.
+                        </p>
+                      )}
+                      {selectedShareBooking.isMyMatch ? (
+                        <label className="flex items-start gap-2 text-xs">
+                          <input
+                            type="checkbox"
+                            checked={shareWithMatchedRoommate}
+                            onChange={(event) => setShareWithMatchedRoommate(event.target.checked)}
+                            className="mt-0.5 accent-[var(--primary)]"
+                          />
+                          <span>Request to share this room with the current resident</span>
+                        </label>
+                      ) : (
+                        <div className="space-y-2">
+                          <p className="text-[10px]">Complete the compatibility quiz and mutually match with the current resident before requesting this spot.</p>
+                          <button
+                            type="button"
+                            onClick={onRoommateCompatibility}
+                            className="rounded-lg border border-violet-300 px-3 py-1.5 text-[10px] font-semibold"
+                          >
+                            Go to roommate compatibility
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {roommateMatchRequest?.selectedStudent && !selectedShareBooking && (
+                    <div className="rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3">
+                      <label className="flex items-start gap-2 text-xs">
+                        <input
+                          type="checkbox"
+                          checked={shareWithMatchedRoommate}
+                          onChange={(event) => setShareWithMatchedRoommate(event.target.checked)}
+                          disabled={!selectedRoom || selectedRoom.capacity < 2}
+                          className="mt-0.5 accent-[var(--primary)]"
+                        />
+                        <span>
+                          Invite <strong>{roommateMatchRequest.selectedStudent.name}</strong> to share this room
+                        </span>
+                      </label>
+                      {selectedRoom?.capacity < 2 ? (
+                        <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">This room is listed for one person only.</p>
+                      ) : shareWithMatchedRoommate && selectedRoom ? (
+                        <p className="mt-2 text-[10px] text-[var(--muted-foreground)]">
+                          Each student pays half after the invitation is accepted and the landlord confirms: ₱{(selectedRoom.price / 2).toLocaleString()}/mo rent and ₱{(selectedRoom.securityDeposit / 2).toLocaleString()} deposit.
+                        </p>
+                      ) : null}
+                    </div>
+                  )}
+                  {roommateMatchError && (
+                    <p role="status" className="text-xs text-amber-800">
+                      Roommate match could not be loaded: {roommateMatchError}
+                    </p>
+                  )}
                   <p className="text-xs text-[var(--muted-foreground)]">Your stay renews monthly. Payment is available after the landlord confirms your booking.</p>
-                  <button
-                    onClick={handleBook}
-                    disabled={busy || availabilityLoading || !bookRoom || !startDate || selectedRoomConflict}
-                    className="w-full py-3 bg-[var(--primary)] text-white rounded-xl font-semibold text-sm hover:opacity-90 disabled:opacity-60"
-                  >
-                    {availabilityLoading ? "Checking availability…" : busy ? "Booking…" : "Book"}
-                  </button>
+                  <BookRoomButton
+                    studentId={session.studentId}
+                    roomId={bookRoom}
+                    startDate={startDate}
+                    endDate={endDate}
+                    roommateStudentId={!selectedShareBooking && shareWithMatchedRoommate ? roommateMatchRequest?.selectedStudent?.studentId : null}
+                    joinBookingId={selectedShareBooking && shareWithMatchedRoommate ? selectedShareBooking.bookingId : null}
+                    disabled={availabilityLoading || !bookRoom || !startDate || selectedRoomConflict || selectedRoomUnavailable || Boolean(selectedShareBooking && (!selectedShareBooking.isMyMatch || !shareWithMatchedRoommate))}
+                    label={availabilityLoading ? "Checking availability…" : selectedShareBooking ? "Request to share" : "Book"}
+                    successMessage={selectedShareBooking
+                      ? selectedShareBooking.status === "Confirmed"
+                        ? `Request sent. If the resident accepts, sharing starts ${shareStartDate(selectedShareBooking)}. Your deposit share will be billed, and any excess deposit paid by the resident becomes a future rent credit.`
+                        : "Request sent. The current resident must accept before the landlord can confirm the shared booking."
+                      : shareWithMatchedRoommate
+                      ? `Invitation sent to ${roommateMatchRequest?.selectedStudent?.name}. The landlord can confirm the shared booking after they accept.`
+                      : "Booking request sent. The landlord must confirm it before payment can be submitted."}
+                    onBookingCreated={refreshAfterBooking}
+                  />
                   <button
                     onClick={() => onStartChat({
                       accountId: property.landlordAccountId,
@@ -663,6 +807,19 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
           </div>
         </div>
       </div>
+      {lightbox && (
+        <ImageLightbox
+          images={lightbox.images}
+          initialIndex={lightbox.index}
+          title={lightbox.title}
+          keyboardNavigation
+          onClose={() => setLightbox(null)}
+          onIndexChange={(index) => {
+            setLightbox((current) => current && { ...current, index });
+            if (lightbox.isPropertyGallery) setActiveImg(index);
+          }}
+        />
+      )}
     </div>
   );
 }

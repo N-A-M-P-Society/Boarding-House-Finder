@@ -15,6 +15,8 @@ import {
 } from "../lib/api.js";
 import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
 import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
+import DashboardHeader from "../components/DashboardHeader.jsx";
+import DashboardTabBar from "../components/DashboardTabBar.jsx";
 const SETTING_KEYS = { police: "weight_police", lighting: "weight_lighting", gated: "weight_gated", cctv: "weight_cctv" };
 export default function AdminConsole({ displayName, session, onProfilePhotoChange }) {
   const { properties: PROPERTIES, reload } = useData();
@@ -23,6 +25,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
   const [inspect, setInspect] = useState({ houseId: "", police: "", lighting: "", gated: false, active: "", required: "" });
   const [weightsLoaded, setWeightsLoaded] = useState(false);
   const adminId = session?.accountId;
+  const isSuperAdmin = session?.dbRole === "SuperAdmin";
   const refreshAdmin = useCallback(async () => {
     try {
       const [v, r, a, st] = await Promise.all([fetchPendingVerifications(), fetchModerationReviews(), fetchAuditEntries(), fetchSettings()]);
@@ -226,6 +229,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
     );
   }
   async function saveWeights() {
+    if (!isSuperAdmin) return showToast("Permission denied", "Only SuperAdmins can change safety score weights.");
     const total = Object.values(weights).reduce((a, b) => a + b, 0);
     if (total !== 100) return showToast("Weights must total 100%", `Currently ${total}%.`);
     run(
@@ -272,50 +276,42 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
     weightTotal === 100;
   const inspectionPreview = inspectionReady ? computeScore(inspect) : null;
   return (
-    <div className="admin-console max-w-6xl mx-auto px-4 sm:px-6 py-8">
+    <div className="admin-console dashboard-shell">
       {/* Header */}
-      <div className="flex items-center gap-3 mb-8">
-        <ProfilePhotoUpload
-          name={activeAdminName}
-          photoUrl={session?.profile_photo_url}
-          onUploaded={async (url) => {
-            await updateAccountProfile(session.accountId, { profile_photo_url: url });
-            onProfilePhotoChange?.(url);
-          }}
-        />
-        <div>
-          <h1 className="font-display text-2xl font-semibold">Admin Console</h1>
-          <p className="text-[var(--muted-foreground)] text-sm flex items-center gap-1.5">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 inline-block" />
+      <DashboardHeader
+        avatar={(
+          <ProfilePhotoUpload
+            name={activeAdminName}
+            photoUrl={session?.profile_photo_url}
+            onUploaded={async (url) => {
+              await updateAccountProfile(session.accountId, { profile_photo_url: url });
+              onProfilePhotoChange?.(url);
+            }}
+          />
+        )}
+        title="Admin Console"
+        description={(
+          <span className="flex items-center gap-1.5">
+            <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
             {activeAdminName} · MFA Active · All actions logged
-          </p>
-        </div>
-      </div>
+          </span>
+        )}
+      />
 
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-[var(--border)] mb-8 overflow-x-auto">
-        {[
-          ["landlords", `Landlord Approval (${verifications.length})`],
-          ["queue", `Approval Queue (${ADMIN_PENDING.length})`],
-          ["listings", "All Listings"],
-          ["safety", "Safety Inspection"],
-          ["reviews", "Reviews"],
-          ["badges", "Badge Verification"],
-          ["audit", "Audit Log"],
-        ].map(([tab, label]) => (
-          <button
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2.5 text-sm font-medium whitespace-nowrap transition-colors border-b-2 -mb-px ${
-              activeTab === tab
-                ? "border-[var(--primary)] text-[var(--primary)]"
-                : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-            }`}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
+      <DashboardTabBar
+        activeTab={activeTab}
+        onTabChange={setActiveTab}
+        items={[
+          { id: "landlords", label: `Landlord Approval (${verifications.length})` },
+          { id: "queue", label: `Approval Queue (${ADMIN_PENDING.length})` },
+          { id: "listings", label: "All Listings" },
+          { id: "safety", label: "Safety Inspection" },
+          { id: "reviews", label: "Reviews" },
+          { id: "badges", label: "Badge Verification" },
+          { id: "audit", label: "Audit Log" },
+        ]}
+      />
 
       {/* Landlord Approval */}
       {activeTab === "landlords" && (
@@ -515,53 +511,55 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
       {/* Safety Weights */}
       {activeTab === "safety" && (
         <div className="space-y-8">
-          <section className="space-y-4">
-            <div>
-              <h2 className="font-display text-xl font-semibold">Safety Score Weights</h2>
-              <p className="mt-1 max-w-3xl text-sm text-[var(--muted-foreground)]">
-                Each percentage is that factor’s share of the final score out of 10. For example, a 25% weight means a factor rated 8/10 contributes 2 points. All four weights must total exactly 100%.
-              </p>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              {[
-                { key: "police", label: "Distance to police assistance", desc: "Closer is scored higher; 0–2,000m maps linearly from 10 to 0." },
-                { key: "lighting", label: "Street lighting", desc: "Inspector rating from 1 (poorly lit) to 5 (well lit), converted to 2–10." },
-                { key: "gated", label: "Gated access", desc: "Secure gated access scores 10; no secure gate scores 0." },
-                { key: "cctv", label: "CCTV coverage", desc: "Active cameras ÷ required cameras, capped at 10/10." },
-              ].map((factor) => (
-                <div key={factor.key} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
-                  <div className="mb-3 flex items-start justify-between gap-3">
-                    <div>
-                      <div className="text-sm font-semibold">{factor.label}</div>
-                      <div className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">{factor.desc}</div>
+          {isSuperAdmin && (
+            <section className="space-y-4">
+              <div>
+                <h2 className="font-display text-xl font-semibold">Safety Score Weights</h2>
+                <p className="mt-1 max-w-3xl text-sm text-[var(--muted-foreground)]">
+                  Each percentage is that factor’s share of the final score out of 10. For example, a 25% weight means a factor rated 8/10 contributes 2 points. All four weights must total exactly 100%.
+                </p>
+              </div>
+              <div className="grid gap-3 md:grid-cols-2">
+                {[
+                  { key: "police", label: "Distance to police assistance", desc: "Closer is scored higher; 0–2,000m maps linearly from 10 to 0." },
+                  { key: "lighting", label: "Street lighting", desc: "Inspector rating from 1 (poorly lit) to 5 (well lit), converted to 2–10." },
+                  { key: "gated", label: "Gated access", desc: "Secure gated access scores 10; no secure gate scores 0." },
+                  { key: "cctv", label: "CCTV coverage", desc: "Active cameras ÷ required cameras, capped at 10/10." },
+                ].map((factor) => (
+                  <div key={factor.key} className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+                    <div className="mb-3 flex items-start justify-between gap-3">
+                      <div>
+                        <div className="text-sm font-semibold">{factor.label}</div>
+                        <div className="mt-1 text-xs leading-relaxed text-[var(--muted-foreground)]">{factor.desc}</div>
+                      </div>
+                      <span className="font-mono text-lg font-bold text-[var(--primary)]">{weights[factor.key]}%</span>
                     </div>
-                    <span className="font-mono text-lg font-bold text-[var(--primary)]">{weights[factor.key]}%</span>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={weights[factor.key]}
+                      aria-label={`${factor.label} weight`}
+                      onChange={(e) => setWeights((prev) => ({ ...prev, [factor.key]: Number(e.target.value) }))}
+                      className="w-full accent-[var(--primary)]"
+                    />
                   </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={5}
-                    value={weights[factor.key]}
-                    aria-label={`${factor.label} weight`}
-                    onChange={(e) => setWeights((prev) => ({ ...prev, [factor.key]: Number(e.target.value) }))}
-                    className="w-full accent-[var(--primary)]"
-                  />
-                </div>
-              ))}
-            </div>
-            <div className={`flex items-center justify-between rounded-xl border p-3 ${weightTotal === 100 ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-800"}`}>
-              <span className="text-sm font-medium">Weight total</span>
-              <span className="font-mono font-bold">{weightTotal}% / 100%</span>
-            </div>
-            <button
-              onClick={saveWeights}
-              disabled={weightTotal !== 100}
-              className="rounded-xl bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              Save Weights
-            </button>
-          </section>
+                ))}
+              </div>
+              <div className={`flex items-center justify-between rounded-xl border p-3 ${weightTotal === 100 ? "border-emerald-200 bg-emerald-50 text-emerald-800" : "border-red-200 bg-red-50 text-red-800"}`}>
+                <span className="text-sm font-medium">Weight total</span>
+                <span className="font-mono font-bold">{weightTotal}% / 100%</span>
+              </div>
+              <button
+                onClick={saveWeights}
+                disabled={weightTotal !== 100}
+                className="rounded-xl bg-[var(--primary)] px-5 py-3 text-sm font-semibold text-white transition-opacity hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Save Weights
+              </button>
+            </section>
+          )}
 
           <section className="space-y-4 rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
             <div>

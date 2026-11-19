@@ -11,6 +11,9 @@ DROP TRIGGER IF EXISTS check_student_email ON auth.users;
 CREATE EXTENSION IF NOT EXISTS btree_gist;
 
 DROP TABLE IF EXISTS saved_listings CASCADE;
+DROP TABLE IF EXISTS roommate_match_candidates CASCADE;
+DROP TABLE IF EXISTS roommate_match_requests CASCADE;
+DROP TABLE IF EXISTS roommate_board_requests CASCADE;
 DROP TABLE IF EXISTS invoices CASCADE;
 DROP TABLE IF EXISTS campus_gates CASCADE;
 DROP TABLE IF EXISTS system_settings CASCADE;
@@ -39,6 +42,13 @@ DROP FUNCTION IF EXISTS is_staff() CASCADE;
 DROP FUNCTION IF EXISTS is_superadmin() CASCADE;
 DROP FUNCTION IF EXISTS public.get_public_room_bookings(BIGINT) CASCADE;
 DROP FUNCTION IF EXISTS create_staff_user(TEXT, TEXT, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.create_shared_room_booking(BIGINT, DATE, DATE, BIGINT) CASCADE;
+DROP FUNCTION IF EXISTS public.respond_to_shared_booking_invite(BIGINT, BOOLEAN) CASCADE;
+DROP FUNCTION IF EXISTS public.get_my_shared_booking_invites() CASCADE;
+DROP FUNCTION IF EXISTS public.create_booking_invoices() CASCADE;
+DROP FUNCTION IF EXISTS public.get_my_invoice_balances() CASCADE;
+DROP FUNCTION IF EXISTS public.submit_payment(BIGINT, NUMERIC, TEXT, TEXT) CASCADE;
+DROP FUNCTION IF EXISTS public.sync_invoice_paid_status() CASCADE;
 
 DROP TYPE IF EXISTS room_amenity CASCADE;
 DROP TYPE IF EXISTS listing_status CASCADE;
@@ -140,6 +150,8 @@ CREATE TABLE boarding_houses (
     verification_id BIGINT UNIQUE REFERENCES property_verifications(verification_id) ON DELETE SET NULL,
     house_name TEXT NOT NULL,
     address TEXT NOT NULL,
+    gender_policy TEXT NOT NULL DEFAULT 'Any'
+        CHECK (gender_policy IN ('Any', 'Female', 'Male')),
     latitude DECIMAL(10, 8),
     longitude DECIMAL(11, 8),
     description TEXT,
@@ -179,6 +191,11 @@ CREATE TABLE rooms (
 CREATE TABLE bookings (
     booking_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     student_id BIGINT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    roommate_student_id BIGINT REFERENCES students(student_id),
+    roommate_invite_status TEXT CHECK (
+        (roommate_student_id IS NULL AND roommate_invite_status IS NULL)
+        OR (roommate_student_id IS NOT NULL AND roommate_invite_status IN ('Pending', 'Accepted', 'Declined'))
+    ),
     room_id BIGINT NOT NULL REFERENCES rooms(room_id) ON DELETE CASCADE,
     start_date DATE NOT NULL,
     end_date DATE NOT NULL,
@@ -211,6 +228,11 @@ GRANT EXECUTE ON FUNCTION public.get_public_room_bookings(BIGINT) TO anon, authe
 CREATE TABLE invoices (
     invoice_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     booking_id BIGINT NOT NULL REFERENCES bookings(booking_id) ON DELETE CASCADE,
+    student_id BIGINT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
+    payment_type TEXT NOT NULL DEFAULT 'Monthly rent'
+        CHECK (payment_type IN ('Monthly rent', 'Security deposit')),
+    period_start DATE NOT NULL,
+    period_end DATE NOT NULL,
     amount_due DECIMAL(10, 2) NOT NULL,
     due_date DATE NOT NULL,
     is_paid BOOLEAN DEFAULT FALSE,
@@ -221,6 +243,7 @@ CREATE TABLE payments (
     payment_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     booking_id BIGINT NOT NULL REFERENCES bookings(booking_id) ON DELETE CASCADE,
     invoice_id BIGINT REFERENCES invoices(invoice_id) ON DELETE SET NULL,
+    student_id BIGINT NOT NULL REFERENCES students(student_id) ON DELETE CASCADE,
     amount DECIMAL(10, 2) NOT NULL,
     payment_type TEXT NOT NULL,
     payment_date TIMESTAMPTZ DEFAULT NOW(),
@@ -475,10 +498,23 @@ FOR EACH ROW EXECUTE FUNCTION public.protect_house_admin_fields();
 CREATE OR REPLACE FUNCTION public.lock_booking_keys()
 RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
 BEGIN
-    IF auth.uid() IS NOT NULL AND (
-        NEW.student_id IS DISTINCT FROM OLD.student_id OR NEW.room_id IS DISTINCT FROM OLD.room_id
-        OR NEW.start_date IS DISTINCT FROM OLD.start_date OR NEW.end_date IS DISTINCT FROM OLD.end_date) THEN
-        RAISE EXCEPTION 'Booking student, room and dates cannot be changed.';
+    IF auth.uid() IS NOT NULL THEN
+        IF NEW.student_id IS DISTINCT FROM OLD.student_id
+           OR NEW.room_id IS DISTINCT FROM OLD.room_id
+           OR NEW.start_date IS DISTINCT FROM OLD.start_date THEN
+            RAISE EXCEPTION 'Booking student, room and move-in date cannot be changed.';
+        END IF;
+        IF NEW.end_date IS DISTINCT FROM OLD.end_date
+           AND current_setting('app.allow_booking_renewal', TRUE) IS DISTINCT FROM 'on' THEN
+            RAISE EXCEPTION 'Billing-cycle dates can only be changed through the renewal flow.';
+        END IF;
+        IF NEW.roommate_student_id IS DISTINCT FROM OLD.roommate_student_id
+           OR (
+             NEW.roommate_invite_status IS DISTINCT FROM OLD.roommate_invite_status
+             AND current_setting('app.allow_roommate_invite', TRUE) IS DISTINCT FROM 'on'
+           ) THEN
+            RAISE EXCEPTION 'Roommate invitations can only be changed through the invitation flow.';
+        END IF;
     END IF;
     RETURN NEW;
 END;
@@ -495,6 +531,7 @@ BEGIN
         OR NEW.invoice_id     IS DISTINCT FROM OLD.invoice_id
         OR NEW.amount         IS DISTINCT FROM OLD.amount
         OR NEW.payment_type   IS DISTINCT FROM OLD.payment_type
+        OR NEW.student_id     IS DISTINCT FROM OLD.student_id
         OR NEW.payment_date   IS DISTINCT FROM OLD.payment_date
         OR NEW.payment_method IS DISTINCT FROM OLD.payment_method
         OR NEW.receipt_url    IS DISTINCT FROM OLD.receipt_url) THEN
@@ -550,7 +587,12 @@ CREATE POLICY staff_select_accounts ON accounts FOR SELECT USING (is_staff());
 CREATE POLICY landlord_self_profile ON landlords FOR ALL USING (landlord_id = auth_landlord_id()) WITH CHECK (landlord_id = auth_landlord_id());
 CREATE POLICY student_self_profile  ON students  FOR ALL USING (student_id  = auth_student_id())  WITH CHECK (student_id  = auth_student_id());
 CREATE POLICY landlord_view_applicant_students ON students FOR SELECT USING (
-    student_id IN (SELECT student_id FROM bookings WHERE booking_id IN (SELECT my_booking_ids()))
+    student_id IN (
+        SELECT student_id FROM bookings WHERE booking_id IN (SELECT my_booking_ids())
+        UNION
+        SELECT roommate_student_id FROM bookings
+        WHERE booking_id IN (SELECT my_booking_ids()) AND roommate_student_id IS NOT NULL
+    )
 );
 CREATE POLICY staff_select_landlords ON landlords FOR SELECT USING (is_staff());
 CREATE POLICY staff_select_students  ON students  FOR SELECT USING (is_staff());
@@ -584,10 +626,14 @@ CREATE POLICY landlord_update_rooms ON rooms FOR UPDATE USING (house_id IN (SELE
 CREATE POLICY student_select_rooms ON rooms FOR SELECT USING (house_id IN (SELECT house_id FROM boarding_houses WHERE listing_status = 'Published'));
 
 -- 6.6 Bookings & invoices
-CREATE POLICY student_select_bookings ON bookings FOR SELECT USING (student_id = auth_student_id());
+CREATE POLICY student_select_bookings ON bookings FOR SELECT USING (
+    student_id = auth_student_id()
+    OR (roommate_student_id = auth_student_id() AND roommate_invite_status IN ('Pending', 'Accepted'))
+);
 CREATE POLICY student_insert_bookings ON bookings FOR INSERT WITH CHECK (
     student_id = auth_student_id() AND status = 'Pending'
     AND start_date >= CURRENT_DATE
+    AND roommate_student_id IS NULL AND roommate_invite_status IS NULL
     AND room_id IN (SELECT room_id FROM rooms WHERE house_id IN (SELECT house_id FROM boarding_houses WHERE listing_status = 'Published'))
 );
 CREATE POLICY student_cancel_bookings ON bookings FOR UPDATE USING (student_id = auth_student_id()) WITH CHECK (student_id = auth_student_id() AND status = 'Cancelled');
@@ -600,22 +646,12 @@ CREATE POLICY landlord_update_bookings ON bookings FOR UPDATE USING (booking_id 
     )
 );
 
-CREATE POLICY student_select_invoices ON invoices FOR SELECT USING (booking_id IN (SELECT booking_id FROM bookings WHERE student_id = auth_student_id()));
-CREATE POLICY landlord_manage_invoices ON invoices FOR ALL USING (booking_id IN (SELECT my_booking_ids())) WITH CHECK (booking_id IN (SELECT my_booking_ids()));
+CREATE POLICY student_select_invoices ON invoices FOR SELECT USING (student_id = auth_student_id());
+CREATE POLICY landlord_select_invoices ON invoices FOR SELECT USING (booking_id IN (SELECT my_booking_ids()));
 CREATE POLICY staff_select_invoices ON invoices FOR SELECT USING (is_staff());
 
 -- 6.7 Payments
-CREATE POLICY student_select_payments ON payments FOR SELECT USING (booking_id IN (SELECT booking_id FROM bookings WHERE student_id = auth_student_id()));
-CREATE POLICY student_insert_payments ON payments FOR INSERT WITH CHECK (
-    booking_id IN (
-        SELECT booking_id FROM bookings
-        WHERE student_id = auth_student_id() AND status = 'Confirmed'
-    )
-    AND verification_status = 'Pending'
-    AND payment_type IN ('Monthly rent', 'Security deposit')
-    AND amount > 0
-    AND receipt_url LIKE ('payments/' || auth.uid()::TEXT || '/%')
-);
+CREATE POLICY student_select_payments ON payments FOR SELECT USING (student_id = auth_student_id());
 CREATE POLICY landlord_select_payments ON payments FOR SELECT USING (booking_id IN (SELECT my_booking_ids()));
 CREATE POLICY landlord_update_payments ON payments FOR UPDATE
 USING (

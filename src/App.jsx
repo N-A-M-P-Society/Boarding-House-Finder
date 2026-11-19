@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Nav from "./components/Nav.jsx";
 import RoleSelect from "./views/RoleSelect.jsx";
 import LoginPage from "./views/LoginPage.jsx";
+import PasswordReset from "./views/PasswordReset.jsx";
 import Signup from "./views/Signup.jsx";
 import Landing from "./views/Landing.jsx";
 import Listings from "./views/Listings.jsx";
@@ -12,23 +13,33 @@ import LandlordDashboard from "./views/LandlordDashboard.jsx";
 import AdminConsole from "./views/AdminConsole.jsx";
 import Chat from "./views/Chat.jsx";
 import Comparison from "./views/Comparison.jsx";
+import NotificationInbox from "./views/NotificationInbox.jsx";
 import { DataProvider } from "./context/DataContext.jsx";
 import { supabase, isSupabaseConfigured } from "./lib/supabase.js";
-import { fetchMessages, loadProfile, signOut } from "./lib/api.js";
-const AUTH_PAGES = ["role-select", "login-student", "login-landlord", "login-admin", "signup"];
+import { fetchMessages, fetchUnreadNotificationCount, GENERIC_ERROR_MESSAGE, loadProfile, signOut } from "./lib/api.js";
+const AUTH_PAGES = ["role-select", "login-student", "login-landlord", "login-admin", "signup", "reset-password"];
 // Owns the Supabase session so DataProvider can refetch (RLS) whenever the user changes.
 export default function App() {
   const [session, setSession] = useState(null);
+  const [passwordRecovery, setPasswordRecovery] = useState(false);
   const [authReady, setAuthReady] = useState(!isSupabaseConfigured);
   useEffect(() => {
     if (!isSupabaseConfigured) return;
     let active = true;
+    const urlHash = new URLSearchParams(window.location.hash.slice(1));
+    if (urlHash.get("type") === "recovery" || new URLSearchParams(window.location.search).get("type") === "recovery") {
+      setPasswordRecovery(true);
+    }
     loadProfile()
       .then((p) => active && setSession(p))
       .catch(() => {})
       .finally(() => active && setAuthReady(true));
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
-      if (event === "SIGNED_OUT") setSession(null);
+      if (event === "PASSWORD_RECOVERY") setPasswordRecovery(true);
+      if (event === "SIGNED_OUT") {
+        setSession(null);
+        setPasswordRecovery(false);
+      }
     });
     return () => {
       active = false;
@@ -40,16 +51,23 @@ export default function App() {
   }
   return (
     <DataProvider session={session}>
-      <Shell session={session} setSession={setSession} />
+      <Shell
+        session={session}
+        setSession={setSession}
+        passwordRecovery={passwordRecovery}
+        setPasswordRecovery={setPasswordRecovery}
+      />
     </DataProvider>
   );
 }
-function Shell({ session, setSession }) {
+function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
   const userRole = session?.role ?? null;
   const displayName = session?.name ?? "";
   const accountId = session?.accountId;
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
   const unreadRefreshSequence = useRef(0);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const notificationRefreshSequence = useRef(0);
   const refreshUnreadMessageCount = useCallback(async () => {
     const request = ++unreadRefreshSequence.current;
     if (!accountId) {
@@ -67,6 +85,24 @@ function Shell({ session, setSession }) {
     } catch (error) {
       if (request === unreadRefreshSequence.current) {
         console.error("Could not refresh unread message count:", error);
+      }
+    }
+  }, [accountId]);
+  const refreshUnreadNotificationCount = useCallback(async () => {
+    const request = ++notificationRefreshSequence.current;
+    if (!accountId) {
+      setUnreadNotificationCount(0);
+      return;
+    }
+
+    try {
+      const count = await fetchUnreadNotificationCount();
+      if (request === notificationRefreshSequence.current) {
+        setUnreadNotificationCount(count);
+      }
+    } catch (error) {
+      if (request === notificationRefreshSequence.current) {
+        console.error("Could not refresh unread notification count:", error);
       }
     }
   }, [accountId]);
@@ -99,6 +135,35 @@ function Shell({ session, setSession }) {
       supabase.removeChannel(channel);
     };
   }, [accountId, refreshUnreadMessageCount]);
+  useEffect(() => {
+    if (!accountId) {
+      notificationRefreshSequence.current += 1;
+      setUnreadNotificationCount(0);
+      return;
+    }
+
+    refreshUnreadNotificationCount();
+    const channel = supabase
+      .channel(`unread-notifications-${accountId}`)
+      .on("postgres_changes", {
+        event: "INSERT",
+        schema: "public",
+        table: "notifications",
+        filter: `account_id=eq.${accountId}`,
+      }, refreshUnreadNotificationCount)
+      .on("postgres_changes", {
+        event: "UPDATE",
+        schema: "public",
+        table: "notifications",
+        filter: `account_id=eq.${accountId}`,
+      }, refreshUnreadNotificationCount)
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") refreshUnreadNotificationCount();
+      });
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [accountId, refreshUnreadNotificationCount]);
   const profilePhotoUrl =
     session?.student?.profile_photo_url ||
     session?.landlord?.profile_photo_url ||
@@ -113,6 +178,9 @@ function Shell({ session, setSession }) {
   const [isDark, setIsDark] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
   const isAuthPage = AUTH_PAGES.includes(page);
+  useEffect(() => {
+    if (passwordRecovery) setPage("reset-password");
+  }, [passwordRecovery]);
   // Read the saved theme after mount (localStorage/window don't exist during SSR)
   useEffect(() => {
     let dark = false;
@@ -140,6 +208,11 @@ function Shell({ session, setSession }) {
     setPage("student-dashboard");
     document.getElementById("main-content")?.scrollTo({ top: 0, behavior: "smooth" });
   }
+  function navigateToRoommateTab() {
+    setDashboardInitialTab("roommates");
+    setPage("student-dashboard");
+    document.getElementById("main-content")?.scrollTo({ top: 0, behavior: "smooth" });
+  }
   function handleRoleNav(authPage, role) {
     if (role) setPendingLoginRole(role);
     navigate(authPage);
@@ -149,6 +222,22 @@ function Shell({ session, setSession }) {
     if (profile.role === "student") navigate("student-dashboard");
     else if (profile.role === "landlord") navigate("landlord-dashboard");
     else navigate("admin");
+  }
+  async function handlePasswordResetComplete() {
+    const profile = await loadProfile();
+    if (!profile) throw new Error("Unable to load your account. Please sign in again.");
+    const { error } = await signOut();
+    if (error) throw new Error(GENERIC_ERROR_MESSAGE);
+    setSession(null);
+    setPasswordRecovery(false);
+    setPendingLoginRole(profile.role);
+    navigate(`login-${profile.role}`);
+  }
+  async function leavePasswordReset() {
+    await signOut();
+    setSession(null);
+    setPasswordRecovery(false);
+    navigate("role-select");
   }
   function handleProfilePhotoChange(url) {
     setSession((current) => current && ({
@@ -194,6 +283,9 @@ function Shell({ session, setSession }) {
           />
         )}
         {page === "signup" && <Signup onBack={() => navigate("role-select")} onLogin={handleLogin} />}
+        {page === "reset-password" && (
+          <PasswordReset onBack={leavePasswordReset} onComplete={handlePasswordResetComplete} />
+        )}
       </div>
     );
   }
@@ -207,6 +299,7 @@ function Shell({ session, setSession }) {
         displayName={displayName}
         profilePhotoUrl={profilePhotoUrl}
         unreadMessageCount={unreadMessageCount}
+        unreadNotificationCount={unreadNotificationCount}
         isDark={isDark}
         onToggleTheme={() => setIsDark((dark) => !dark)}
         onLogin={(role) => handleRoleNav(`login-${role}`, role)}
@@ -234,6 +327,7 @@ function Shell({ session, setSession }) {
               navigate("chat");
             }}
             onBookingCreated={navigateToPaymentStep}
+            onRoommateCompatibility={navigateToRoommateTab}
             userRole={userRole}
             session={session}
             onRequireLogin={() => handleRoleNav("login-student", "student")}
@@ -266,6 +360,12 @@ function Shell({ session, setSession }) {
             chatTarget={chatTarget}
             onChatTargetHandled={() => setChatTarget(null)}
             onMessagesRead={refreshUnreadMessageCount}
+          />
+        )}
+        {page === "inbox" && userRole === "landlord" && (
+          <NotificationInbox
+            accountId={accountId}
+            onNotificationsChanged={refreshUnreadNotificationCount}
           />
         )}
         {page === "comparison" && (
