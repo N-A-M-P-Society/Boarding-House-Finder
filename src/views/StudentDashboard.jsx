@@ -5,11 +5,16 @@ import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
 import { useData } from "../context/DataContext.jsx";
 import { supabase } from "../lib/supabase.js";
 import {
+  closeRoommateRequest,
   createPayment,
+  createRoommateRequest,
   fetchBookings,
   fetchPayments,
+  fetchRoommateRequests,
   fetchSavedHouseIds,
+  renewBooking,
   sendMessage,
+  studentMoveOutBooking,
   setBookingStatus,
   updateStudentProfile,
 } from "../lib/api.js";
@@ -19,8 +24,30 @@ const PREF_MAP = {
   study: { quiet: 1, "background-music": 2, group: 3 },
   guests: { "no-guests": 1, occasional: 2, frequent: 3 },
 };
-export default function StudentDashboard({ onNavigate, onStartChat, onSelectProperty, comparedIds, onCompare, displayName, session, onProfilePhotoChange }) {
-  const { properties: PROPERTIES } = useData();
+const ROOMMATE_PREFERENCE_LABELS = {
+  sleep: { 1: "Early sleeper", 2: "Flexible sleep schedule", 3: "Night owl" },
+  study: { 1: "Quiet study", 2: "Background music", 3: "Group study" },
+  cleanliness: { 1: "Very clean", 2: "Very clean", 3: "Generally tidy", 4: "Generally tidy", 5: "Organized chaos" },
+  guests: { 1: "No guests", 2: "Occasional guests", 3: "Frequent guests" },
+};
+function localDate(date) {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+function addDays(dateString, days) {
+  const date = new Date(`${dateString}T00:00:00`);
+  date.setDate(date.getDate() + days);
+  return localDate(date);
+}
+function roommatePreferenceSummary(preferences) {
+  return Object.entries(ROOMMATE_PREFERENCE_LABELS)
+    .map(([category, labels]) => labels[preferences[category]] && `${labels[preferences[category]]}`)
+    .filter(Boolean);
+}
+function cyclePromptKey(booking) {
+  return `${booking.id}:${booking.endDate}`;
+}
+export default function StudentDashboard({ onNavigate, onStartChat, onSelectProperty, comparedIds, onCompare, displayName, session, onProfilePhotoChange, initialTab = "overview" }) {
+  const { properties: PROPERTIES, reload } = useData();
   const studentProfile = session?.student ?? {};
   const gender = studentProfile.gender;
   const genderText = gender === "Female" || gender === "Male" ? gender : "";
@@ -32,13 +59,18 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   const [savedIds, setSavedIds] = useState([]);
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [roommateRequests, setRoommateRequests] = useState([]);
   const [bookingSearch, setBookingSearch] = useState("");
   const [bookingStatusFilter, setBookingStatusFilter] = useState("all");
   const [savedSearch, setSavedSearch] = useState("");
   const [savedAvailabilityFilter, setSavedAvailabilityFilter] = useState("all");
   const [bookingDetail, setBookingDetail] = useState(null);
+  const [stayDecisionBookingId, setStayDecisionBookingId] = useState(null);
+  const [dismissedCyclePromptKeys, setDismissedCyclePromptKeys] = useState([]);
+  const [stayActionBusy, setStayActionBusy] = useState(false);
   const [dashboardNotice, setDashboardNotice] = useState(null);
   const [requestBusy, setRequestBusy] = useState(false);
+  const [shareRoommateRequest, setShareRoommateRequest] = useState(false);
   const [paymentBookingId, setPaymentBookingId] = useState("");
   const [paymentType, setPaymentType] = useState("Monthly rent");
   const [paymentAmount, setPaymentAmount] = useState("");
@@ -49,14 +81,16 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   async function refreshMine() {
     if (!session?.studentId) return;
     try {
-      const [savedHouseIds, bookingRows, paymentRows] = await Promise.all([
+      const [savedHouseIds, bookingRows, paymentRows, roommateRows] = await Promise.all([
         fetchSavedHouseIds(session.studentId),
         fetchBookings(),
         fetchPayments(),
+        fetchRoommateRequests(),
       ]);
       setSavedIds(savedHouseIds);
       setBookings(bookingRows);
       setPayments(paymentRows);
+      setRoommateRequests(roommateRows);
     } catch (error) {
       setDashboardNotice({ title: "Dashboard data could not be loaded", message: error.message, error: true });
     }
@@ -78,7 +112,15 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   useEffect(() => {
     if (!session?.accountId) return;
     const channel = supabase
-      .channel(`student-payments-${session.accountId}`)
+      .channel(`student-dashboard-${session.accountId}`)
+      .on("postgres_changes", {
+        event: "*",
+        schema: "public",
+        table: "bookings",
+        filter: `student_id=eq.${session.studentId}`,
+      }, () => {
+        refreshMine();
+      })
       .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, () => {
         refreshMine();
       })
@@ -106,7 +148,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
       ? selectedPaymentBooking.monthlyRate
       : selectedPaymentBooking.securityDeposit || ""));
   }, [paymentBookingId, paymentType, bookings]);
-  const [activeTab, setActiveTab] = useState("overview");
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [quizStep, setQuizStep] = useState(0);
   const [quizAnswers, setQuizAnswers] = useState({});
   const [quizDone, setQuizDone] = useState(false);
@@ -116,6 +158,64 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   const [selectedRoomId, setSelectedRoomId] = useState("");
   const [moveInDate, setMoveInDate] = useState("");
   const [note, setNote] = useState("");
+  const todayDate = localDate(new Date());
+  const renewalWindowEnd = addDays(todayDate, 7);
+  const dueBookings = bookings.filter((booking) =>
+    booking.status === "Confirmed" &&
+    booking.startDate <= todayDate &&
+    booking.endDate <= renewalWindowEnd
+  );
+  const stayDecisionBooking = bookings.find((booking) => booking.id === stayDecisionBookingId);
+  const stayRenewalAvailable = stayDecisionBooking && stayDecisionBooking.endDate <= renewalWindowEnd;
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
+  useEffect(() => {
+    if (stayDecisionBookingId || bookingDetail) return;
+    const dueBooking = dueBookings.find((booking) => !dismissedCyclePromptKeys.includes(cyclePromptKey(booking)));
+    if (dueBooking) setStayDecisionBookingId(dueBooking.id);
+  }, [dueBookings, dismissedCyclePromptKeys, stayDecisionBookingId, bookingDetail]);
+  async function continueStay(booking) {
+    setStayActionBusy(true);
+    try {
+      const nextBillingDate = await renewBooking(booking.id);
+      setDismissedCyclePromptKeys((keys) => keys.includes(cyclePromptKey(booking)) ? keys : [...keys, cyclePromptKey(booking)]);
+      setStayDecisionBookingId(null);
+      setBookingDetail(null);
+      setPaymentBookingId(booking.id);
+      setPaymentType("Monthly rent");
+      setActiveTab("payments");
+      await refreshMine();
+      setDashboardNotice({
+        title: "Stay renewed",
+        message: `Your room remains active through ${nextBillingDate}. Submit the next monthly payment from this tab.`,
+        error: false,
+      });
+    } catch (error) {
+      setDashboardNotice({ title: "Stay could not be renewed", message: error.message, error: true });
+    } finally {
+      setStayActionBusy(false);
+    }
+  }
+  async function confirmMoveOut(booking) {
+    setStayActionBusy(true);
+    try {
+      await studentMoveOutBooking(booking.id);
+      setDismissedCyclePromptKeys((keys) => keys.includes(cyclePromptKey(booking)) ? keys : [...keys, cyclePromptKey(booking)]);
+      setStayDecisionBookingId(null);
+      setBookingDetail(null);
+      await Promise.all([refreshMine(), reload()]);
+      setDashboardNotice({
+        title: "Move-out confirmed",
+        message: `${booking.propertyTitle} · ${booking.roomName} is now available for new bookings.`,
+        error: false,
+      });
+    } catch (error) {
+      setDashboardNotice({ title: "Move-out could not be confirmed", message: error.message, error: true });
+    } finally {
+      setStayActionBusy(false);
+    }
+  }
   const savedProperties = PROPERTIES.filter((p) => savedIds.includes(p.id));
   const filteredBookings = bookings.filter((booking) => {
     const query = bookingSearch.trim().toLowerCase();
@@ -218,6 +318,22 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
         ].join("\n"),
       );
       setRequestStep("submitted");
+      if (shareRoommateRequest) {
+        try {
+          await createRoommateRequest({
+            studentId: session.studentId,
+            roomId: selectedRoomId,
+            moveInDate,
+          });
+          await refreshMine();
+        } catch (error) {
+          setDashboardNotice({
+            title: "Request sent, roommate post not published",
+            message: error.message,
+            error: true,
+          });
+        }
+      }
     } catch (error) {
       setDashboardNotice({ title: "Request could not be sent", message: error.message, error: true });
     } finally {
@@ -337,7 +453,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
               </div>
               <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
                 <table className="w-full min-w-[42rem] text-sm">
-                  <thead className="bg-[var(--muted)]"><tr>{["Property", "Room", "Lease dates", "Monthly rent", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                  <thead className="bg-[var(--muted)]"><tr>{["Property", "Room", "Move-in / cycle end", "Monthly rent", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
                   <PaginatedTableBody
                     rows={filteredBookings}
                     columns={6}
@@ -350,7 +466,14 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                         <td className="px-4 py-3 text-xs">{booking.startDate} → {booking.endDate}</td>
                         <td className="px-4 py-3">₱{Number(booking.monthlyRate).toLocaleString()}/mo</td>
                         <td className="px-4 py-3"><span className="rounded-full bg-[var(--secondary)] px-2.5 py-1 text-xs font-semibold text-[var(--primary)]">{booking.status}</span></td>
-                        <td className="px-4 py-3"><button type="button" onClick={() => setBookingDetail(booking)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">View details</button></td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-2">
+                            <button type="button" onClick={() => setBookingDetail(booking)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">View details</button>
+                            {booking.status === "Confirmed" && booking.startDate <= todayDate && (
+                              <button type="button" onClick={() => setStayDecisionBookingId(booking.id)} className="rounded-lg border border-[var(--border)] px-3 py-1.5 text-xs font-semibold">Move-out / renew</button>
+                            )}
+                          </div>
+                        </td>
                       </tr>
                     )}
                   />
@@ -404,10 +527,15 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
           <section className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
             <div className="mb-4">
               <h2 className="font-display text-xl font-semibold">Submit a payment</h2>
-              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Submit proof of a monthly rent or security deposit payment for a confirmed booking. Your landlord will review it.</p>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Submit proof of a monthly rent or security deposit payment for a confirmed stay. Your landlord will review it.</p>
             </div>
             {payableBookings.length === 0 ? (
-              <p className="rounded-xl bg-[var(--muted)] p-4 text-sm text-[var(--muted-foreground)]">You can submit a payment after a landlord confirms one of your bookings.</p>
+              <div className="rounded-xl bg-[var(--muted)] p-4 text-sm text-[var(--muted-foreground)]">
+                You can submit a payment after a landlord confirms one of your bookings.
+                {bookings.filter((booking) => booking.status === "Pending").map((booking) => (
+                  <p key={booking.id} className="mt-2">{booking.propertyTitle} · {booking.roomName} is awaiting landlord confirmation. The payment form will be available here once approved.</p>
+                ))}
+              </div>
             ) : (
               <form onSubmit={submitPayment} className="grid gap-4 sm:grid-cols-2">
                 <label className="text-xs font-semibold">
@@ -491,14 +619,14 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
           <div className="bg-[var(--secondary)] border border-[var(--primary)]/15 rounded-xl p-4 flex gap-3 text-sm">
             <span className="text-xl flex-shrink-0">ℹ️</span>
             <div className="text-[var(--primary)]">
-              Roommate requests are sent directly to the landlord through Messages. Matching and request status are not tracked as separate records yet.
+              Public roommate posts are optional. If you publish one, other students can see your name, photo, gender, preferences, requested room, and move-in date and can message you directly.
             </div>
           </div>
 
           {requestStep === "list" && (
             <>
               <div className="flex items-center justify-between">
-                <h2 className="font-display text-xl font-semibold">Request a Roommate</h2>
+                <h2 className="font-display text-xl font-semibold">Roommate board</h2>
                 <button
                   onClick={() => setRequestStep("form")}
                   className="px-4 py-2 bg-[var(--primary)] text-white rounded-xl text-sm font-semibold hover:opacity-90 transition-opacity"
@@ -506,9 +634,73 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                   + New Request
                 </button>
               </div>
-              <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-sm text-[var(--muted-foreground)]">
-                New requests are sent as messages and can be continued from the Messages page.
-              </div>
+              {roommateRequests.length === 0 ? (
+                <div className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 text-sm text-[var(--muted-foreground)]">
+                  No open roommate posts yet. Create a request and opt in to share it with other students.
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  {roommateRequests.map((request) => {
+                    const isOwnPost = request.studentId === String(session?.studentId);
+                    const preferences = roommatePreferenceSummary(request.preferences);
+                    return (
+                      <article key={request.id} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
+                        <div className="flex items-start gap-3">
+                          {request.profilePhotoUrl
+                            ? <img src={request.profilePhotoUrl} alt="" className="h-12 w-12 rounded-full object-cover" />
+                            : <div aria-hidden="true" className="flex h-12 w-12 items-center justify-center rounded-full bg-[var(--secondary)] font-semibold text-[var(--primary)]">{request.name?.charAt(0) || "S"}</div>}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <h3 className="font-semibold">{request.name}</h3>
+                              {isOwnPost && <span className="rounded-full bg-[var(--secondary)] px-2 py-0.5 text-[10px] font-semibold text-[var(--primary)]">Your post</span>}
+                            </div>
+                            <p className="text-xs text-[var(--muted-foreground)]">{request.gender || "Gender not set"}{request.academicYear ? ` · ${request.academicYear}` : ""}</p>
+                          </div>
+                        </div>
+                        <div className="mt-4 space-y-1 text-sm">
+                          <p><span className="font-medium">Property / room:</span> {request.propertyTitle} · {request.roomName}</p>
+                          <p><span className="font-medium">Move-in:</span> {request.moveInDate}</p>
+                          <p className="text-xs text-[var(--muted-foreground)]">
+                            {preferences.length ? preferences.join(" · ") : "No roommate preferences shared"}
+                          </p>
+                        </div>
+                        <div className="mt-4 flex justify-end">
+                          {isOwnPost ? (
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  await closeRoommateRequest(request.id);
+                                  setRoommateRequests((current) => current.filter((item) => item.id !== request.id));
+                                } catch (error) {
+                                  setDashboardNotice({ title: "Roommate post could not be closed", message: error.message, error: true });
+                                }
+                              }}
+                              className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold"
+                            >
+                              Close post
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => onStartChat?.({
+                                accountId: request.accountId,
+                                name: request.name,
+                                profilePhotoUrl: request.profilePhotoUrl,
+                                propertyTitle: `Roommate request · ${request.propertyTitle}`,
+                                role: "student",
+                              })}
+                              className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white"
+                            >
+                              Message
+                            </button>
+                          )}
+                        </div>
+                      </article>
+                    );
+                  })}
+                </div>
+              )}
             </>
           )}
 
@@ -581,6 +773,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                     <input
                       type="date"
                       value={moveInDate}
+                      min={todayDate}
                       onChange={(e) => setMoveInDate(e.target.value)}
                       className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
                     />
@@ -597,9 +790,20 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                       className="w-full resize-none rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]"
                     />
                   </div>
+                  <label className="flex items-start gap-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3 text-xs">
+                    <input
+                      type="checkbox"
+                      checked={shareRoommateRequest}
+                      onChange={(event) => setShareRoommateRequest(event.target.checked)}
+                      className="mt-0.5 accent-[var(--primary)]"
+                    />
+                    <span>
+                      Publish this request on the student roommate board. Other students may message me directly; my private contact details and note to the landlord will not be shared.
+                    </span>
+                  </label>
                   <button
                     onClick={submitRequest}
-                    disabled={requestBusy || !session?.accountId || !selectedProperty?.landlordAccountId || !eligibleRooms.some((room) => room.id === selectedRoomId) || !moveInDate}
+                    disabled={requestBusy || !session?.accountId || !selectedProperty?.landlordAccountId || !eligibleRooms.some((room) => room.id === selectedRoomId) || !moveInDate || moveInDate < todayDate}
                     className="w-full rounded-xl bg-[var(--primary)] py-3 text-sm font-semibold text-white disabled:opacity-40"
                   >
                     {requestBusy ? "Sending request…" : "Send Roommate Request"}
@@ -636,7 +840,7 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
                 Your roommate request has been sent to <strong>{selectedProperty?.landlordName}</strong>.
               </p>
               <p className="text-sm text-[var(--muted-foreground)] mb-6">
-                This request is a message, not a separately tracked request record. Continue the conversation from Messages.
+                Your landlord can continue the conversation in Messages. {shareRoommateRequest ? "Your request was also published on the roommate board." : ""}
               </p>
               <div className="bg-[var(--secondary)] rounded-2xl p-4 text-left text-sm mb-6 space-y-2">
                 <div className="flex justify-between">
@@ -802,6 +1006,58 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
         </div>
       )}
 
+      {stayDecisionBooking && (
+        <div className="fixed inset-0 z-[70] flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="w-full max-w-md rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5 shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="student-stay-decision-title">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2 id="student-stay-decision-title" className="font-display text-xl font-semibold">
+                  {stayDecisionBooking.endDate <= todayDate ? "Your billing cycle is ending" : "Choose what happens next"}
+                </h2>
+                <p className="mt-1 text-sm text-[var(--muted-foreground)]">{stayDecisionBooking.propertyTitle} · {stayDecisionBooking.roomName}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setDismissedCyclePromptKeys((keys) => keys.includes(cyclePromptKey(stayDecisionBooking)) ? keys : [...keys, cyclePromptKey(stayDecisionBooking)]);
+                  setStayDecisionBookingId(null);
+                }}
+                aria-label="Decide later"
+                className="rounded-full px-2 py-1 text-lg text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+              >
+                ×
+              </button>
+            </div>
+            <p className="mt-4 text-sm">
+              Your current monthly cycle ends on <strong>{stayDecisionBooking.endDate}</strong>. Renew to keep your room active, or confirm your move-out to release it.
+            </p>
+            <div className="mt-5 grid gap-2">
+              <button
+                type="button"
+                onClick={() => continueStay(stayDecisionBooking)}
+                disabled={stayActionBusy || !stayRenewalAvailable}
+                className="rounded-xl bg-[var(--primary)] px-4 py-3 text-sm font-semibold text-white disabled:opacity-50"
+              >
+                {stayActionBusy ? "Updating stay…" : "Continue Payment / Renew Stay"}
+              </button>
+              <button
+                type="button"
+                onClick={() => confirmMoveOut(stayDecisionBooking)}
+                disabled={stayActionBusy}
+                className="rounded-xl border border-red-300 px-4 py-3 text-sm font-semibold text-red-700 disabled:opacity-50"
+              >
+                Confirm Move-Out
+              </button>
+            </div>
+            <p className="mt-3 text-xs text-[var(--muted-foreground)]">
+              {stayRenewalAvailable
+                ? "Renewing extends the monthly cycle and opens the payment form. Moving out ends your stay today and makes the room available."
+                : "Renewal becomes available during the final seven days of this cycle. You can still confirm move-out now."}
+            </p>
+          </div>
+        </div>
+      )}
+
       {bookingDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
           <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="student-booking-detail-title">
@@ -816,14 +1072,26 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
               {[
                 ["Status", bookingDetail.status],
                 ["Monthly rent", `₱${Number(bookingDetail.monthlyRate).toLocaleString()}`],
-                ["Lease starts", bookingDetail.startDate],
-                ["Lease ends", bookingDetail.endDate],
+                ["Move-in date", bookingDetail.startDate],
+                ["Current billing cycle ends", bookingDetail.endDate],
               ].map(([label, value]) => <div key={label}><div className="text-xs text-[var(--muted-foreground)]">{label}</div><div className="mt-1 text-sm font-medium">{value}</div></div>)}
             </div>
             <div className="flex justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
               <button type="button" onClick={() => setBookingDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
-              {["Pending", "Confirmed"].includes(bookingDetail.status) && (
+              {bookingDetail.status === "Pending" && (
                 <button type="button" onClick={() => cancelBooking(bookingDetail)} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Cancel booking</button>
+              )}
+              {bookingDetail.status === "Confirmed" && bookingDetail.startDate <= todayDate && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setStayDecisionBookingId(bookingDetail.id);
+                    setBookingDetail(null);
+                  }}
+                  className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white"
+                >
+                  Move-out / renewal options
+                </button>
               )}
             </div>
           </div>

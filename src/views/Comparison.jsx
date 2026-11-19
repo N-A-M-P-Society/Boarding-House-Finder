@@ -1,6 +1,9 @@
+import { useState } from "react";
+import ImageLightbox from "../components/ImageLightbox.jsx";
 import { useData } from "../context/DataContext.jsx";
 export default function Comparison({ comparedIds, onNavigate, onSelectProperty, onRemove }) {
   const { properties: PROPERTIES } = useData();
+  const [lightbox, setLightbox] = useState(null);
   const properties = comparedIds.map((id) => PROPERTIES.find((p) => p.id === id)).filter(Boolean);
   if (properties.length === 0) {
     return (
@@ -97,9 +100,14 @@ export default function Comparison({ comparedIds, onNavigate, onSelectProperty, 
               {properties.map((p) => (
                 <th key={p.id} className="px-4 py-3 text-left">
                   <div className="relative">
-                    <div className="rounded-xl overflow-hidden h-28 bg-[var(--muted)] mb-2">
+                    <button
+                      type="button"
+                      onClick={() => setLightbox({ images: p.images, title: p.title })}
+                      aria-label={`Open ${p.title} photos in photo viewer`}
+                      className="mb-2 h-28 w-full overflow-hidden rounded-xl bg-[var(--muted)]"
+                    >
                       <img src={p.images[0]} alt={p.title} className="w-full h-full object-cover" />
-                    </div>
+                    </button>
                     <button
                       onClick={() => onRemove(p.id)}
                       className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/40 text-white text-xs flex items-center justify-center hover:bg-black/60 transition-colors"
@@ -167,6 +175,13 @@ export default function Comparison({ comparedIds, onNavigate, onSelectProperty, 
           </button>
         ))}
       </div>
+      {lightbox && (
+        <ImageLightbox
+          images={lightbox.images}
+          title={lightbox.title}
+          onClose={() => setLightbox(null)}
+        />
+      )}
     </div>
   );
 }

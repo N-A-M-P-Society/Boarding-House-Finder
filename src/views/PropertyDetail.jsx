@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { useData } from "../context/DataContext.jsx";
 import LeafletMap from "../components/LeafletMap.jsx";
+import ImageLightbox from "../components/ImageLightbox.jsx";
 import { createBooking, fetchPublicRoomBookings, saveListing } from "../lib/api.js";
 
 const ACTIVE_BOOKING_STATUSES = new Set(["Pending", "Confirmed"]);
@@ -13,11 +14,12 @@ function formatLocalDate(date) {
   return `${year}-${month}-${day}`;
 }
 
-function dateAfter(date) {
-  if (!date) return formatLocalDate(new Date());
-  const nextDate = new Date(`${date}T00:00:00`);
-  nextDate.setDate(nextDate.getDate() + 1);
-  return formatLocalDate(nextDate);
+function nextBillingDate(date) {
+  const [year, month, day] = date.split("-").map(Number);
+  const nextMonth = new Date(year, month, 1);
+  const lastDay = new Date(nextMonth.getFullYear(), nextMonth.getMonth() + 1, 0).getDate();
+  nextMonth.setDate(Math.min(day, lastDay));
+  return formatLocalDate(nextMonth);
 }
 
 function bookingForDate(roomId, date, bookings) {
@@ -25,7 +27,7 @@ function bookingForDate(roomId, date, bookings) {
     booking.roomId === String(roomId) &&
     ACTIVE_BOOKING_STATUSES.has(booking.status) &&
     booking.startDate <= date &&
-    date < booking.endDate
+    (booking.openEnded || date < booking.endDate)
   );
 }
 
@@ -34,8 +36,9 @@ function hasBookingConflict(roomId, startDate, endDate, bookings) {
   return bookings.some((booking) =>
     booking.roomId === String(roomId) &&
     ACTIVE_BOOKING_STATUSES.has(booking.status) &&
-    startDate < booking.endDate &&
-    endDate > booking.startDate
+    (booking.openEnded
+      ? endDate > booking.startDate
+      : startDate < booking.endDate && endDate > booking.startDate)
   );
 }
 
@@ -83,7 +86,7 @@ function RoomAvailabilityCalendar({ room, bookings, month, onMonthChange, availa
           <div
             key={cell.date}
             role="gridcell"
-            title={cell.booking ? `${cell.status}: ${cell.booking.startDate} to ${cell.booking.endDate}` : cell.status}
+            title={cell.booking ? cell.booking.openEnded ? `${cell.status}: ongoing stay` : `${cell.status}: ${cell.booking.startDate} to ${cell.booking.endDate}` : cell.status}
             aria-label={`${monthLabel} ${cell.day}: ${cell.status}`}
             className={`flex min-h-11 flex-col items-center justify-center rounded-lg border text-xs ${statusStyles[cell.status]}`}
           >
@@ -104,12 +107,11 @@ function RoomAvailabilityCalendar({ room, bookings, month, onMonthChange, availa
   );
 }
 
-export default function PropertyDetail({ propertyId, onNavigate, onStartChat, userRole, session, onRequireLogin }) {
+export default function PropertyDetail({ propertyId, onNavigate, onStartChat, onBookingCreated, userRole, session, onRequireLogin }) {
   const { properties: PROPERTIES, gates, campus, reload } = useData();
   const property = PROPERTIES.find((p) => p.id === propertyId);
   const [bookRoom, setBookRoom] = useState("");
   const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
   const [bookMsg, setBookMsg] = useState({ type: "", text: "" });
   const [busy, setBusy] = useState(false);
   const [availabilityBookings, setAvailabilityBookings] = useState([]);
@@ -117,6 +119,9 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
   const [availabilityError, setAvailabilityError] = useState("");
   const [availabilityRoomId, setAvailabilityRoomId] = useState("");
   const [availabilityMonth, setAvailabilityMonth] = useState(() => new Date(new Date().getFullYear(), new Date().getMonth(), 1));
+  const [lightbox, setLightbox] = useState(null);
+  const [activeImg, setActiveImg] = useState(0);
+  const [activeTab, setActiveTab] = useState("overview");
   useEffect(() => {
     if (!property?.id) return;
     let active = true;
@@ -140,17 +145,17 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
 
   const today = formatLocalDate(new Date());
   const selectedRoom = property?.rooms.find((room) => room.id === bookRoom);
+  const endDate = startDate ? nextBillingDate(startDate) : "";
   const selectedRoomConflict = hasBookingConflict(bookRoom, startDate, endDate, availabilityBookings);
   async function handleBook() {
-    if (!bookRoom || !startDate || !endDate) return setBookMsg({ type: "error", text: "Pick a room and both dates." });
+    if (!bookRoom || !startDate) return setBookMsg({ type: "error", text: "Choose a room and move-in date." });
     if (startDate < today) return setBookMsg({ type: "error", text: "Choose today or a future check-in date." });
-    if (endDate <= startDate) return setBookMsg({ type: "error", text: "End date must be after the start date." });
     if (selectedRoom?.status !== "available") return setBookMsg({ type: "error", text: "This room is not currently listed as available." });
-    if (selectedRoomConflict) return setBookMsg({ type: "error", text: "This room is already reserved or booked for part of those dates." });
+    if (selectedRoomConflict) return setBookMsg({ type: "error", text: "This room is already reserved or occupied for that move-in date." });
     setBusy(true);
     try {
       await createBooking({ studentId: session.studentId, roomId: bookRoom, startDate, endDate });
-      setBookMsg({ type: "ok", text: "Booking request sent. Those dates are reserved while the landlord reviews it." });
+      setBookMsg({ type: "ok", text: "Booking request sent. The landlord must confirm it before payment can be submitted." });
       await reload();
       try {
         setAvailabilityBookings(await fetchPublicRoomBookings(property.id));
@@ -158,6 +163,7 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
       } catch (error) {
         setAvailabilityError(error.message);
       }
+      onBookingCreated?.();
     } catch (e) {
       setBookMsg({ type: "error", text: e.message });
     } finally {
@@ -172,16 +178,33 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
       setBookMsg({ type: "error", text: e.message });
     }
   }
-  const [activeImg, setActiveImg] = useState(0);
-  const [activeTab, setActiveTab] = useState("overview");
   useEffect(() => {
     setBookRoom("");
     setStartDate("");
-    setEndDate("");
     setAvailabilityRoomId("");
     setActiveImg(0);
     setActiveTab("overview");
+    setLightbox(null);
   }, [propertyId]);
+  useEffect(() => {
+    if (!property || activeTab !== "overview" || lightbox) return;
+    function handleGalleryKeys(event) {
+      if (event.target instanceof HTMLElement && event.target.closest("input, textarea, select, [contenteditable='true']")) return;
+      if (property.images.length < 2) return;
+      if (event.key === "ArrowLeft") {
+        event.preventDefault();
+        setActiveImg((index) => (index - 1 + property.images.length) % property.images.length);
+      } else if (event.key === "ArrowRight") {
+        event.preventDefault();
+        setActiveImg((index) => (index + 1) % property.images.length);
+      }
+    }
+    window.addEventListener("keydown", handleGalleryKeys);
+    return () => window.removeEventListener("keydown", handleGalleryKeys);
+  }, [activeTab, lightbox, property]);
+  function showLightbox(images, index, title, isPropertyGallery = false) {
+    setLightbox({ images, index, title, isPropertyGallery });
+  }
   if (!property) {
     return (
       <div className="flex items-center justify-center h-96">
@@ -225,21 +248,15 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
           <div className="space-y-2">
             <div
               className="relative rounded-2xl overflow-hidden h-72 sm:h-96 bg-[var(--muted)]"
-              role="group"
-              tabIndex={property.images.length > 1 ? 0 : undefined}
-              aria-label={`${property.title} photo carousel, ${activeImg + 1} of ${property.images.length}`}
-              onKeyDown={(event) => {
-                if (property.images.length < 2) return;
-                if (event.key === "ArrowLeft") {
-                  event.preventDefault();
-                  setActiveImg((index) => (index - 1 + property.images.length) % property.images.length);
-                } else if (event.key === "ArrowRight") {
-                  event.preventDefault();
-                  setActiveImg((index) => (index + 1) % property.images.length);
-                }
-              }}
             >
-              <img src={property.images[activeImg]} alt={`${property.title}, photo ${activeImg + 1} of ${property.images.length}`} className="h-full w-full object-cover" />
+              <button
+                type="button"
+                onClick={() => showLightbox(property.images, activeImg, property.title, true)}
+                aria-label={`Open ${property.title} photo ${activeImg + 1} in photo viewer`}
+                className="h-full w-full"
+              >
+                <img src={property.images[activeImg]} alt={`${property.title}, photo ${activeImg + 1} of ${property.images.length}`} className="h-full w-full object-cover" />
+              </button>
               {property.images.length > 1 && (
                 <>
                   <button type="button" onClick={() => setActiveImg((index) => (index - 1 + property.images.length) % property.images.length)} aria-label="Previous photo" className="absolute left-3 top-1/2 -translate-y-1/2 rounded-full bg-black/60 px-3 py-2 text-xl text-white hover:bg-black/80">‹</button>
@@ -253,7 +270,11 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
                 {property.images.map((img, i) => (
                   <button
                     key={i}
-                    onClick={() => setActiveImg(i)}
+                    onClick={() => {
+                      setActiveImg(i);
+                      showLightbox(property.images, i, property.title, true);
+                    }}
+                    aria-label={`Open ${property.title} photo ${i + 1} in photo viewer`}
                     className={`h-16 w-24 rounded-lg overflow-hidden border-2 transition-all ${i === activeImg ? "border-[var(--primary)]" : "border-transparent opacity-60 hover:opacity-100"}`}
                   >
                     <img src={img} alt="" className="w-full h-full object-cover" />
@@ -333,6 +354,18 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
                     <LeafletMap properties={[property]} campus={campus} gates={gates} radiusMeters={800} activeId={property.id} />
                   </div>
                 </div>
+                {lightbox && (
+                  <ImageLightbox
+                    images={lightbox.images}
+                    initialIndex={lightbox.index}
+                    title={lightbox.title}
+                    onClose={() => setLightbox(null)}
+                    onIndexChange={(index) => {
+                      setLightbox((current) => current && { ...current, index });
+                      if (lightbox.isPropertyGallery) setActiveImg(index);
+                    }}
+                  />
+                )}
               </div>
             )}
 
@@ -341,7 +374,7 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
                 <div>
                   <h2 className="font-display text-xl font-semibold">Room availability</h2>
                   <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                    This calendar is for {property.title}. Pending requests are reserved; confirmed bookings are unavailable for their date range.
+                    This calendar is for {property.title}. Pending requests reserve their selected dates; confirmed stays remain occupied until move-out.
                   </p>
                 </div>
                 {availabilityError && (
@@ -393,7 +426,9 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
                           </div>
                           {currentBooking && (
                             <div className="mt-1 text-xs text-[var(--muted-foreground)]">
-                              Booked from {currentBooking.startDate} until {currentBooking.endDate} (available again on this date)
+                              {currentBooking.openEnded
+                                ? `Occupied since ${currentBooking.startDate} (ongoing stay)`
+                                : `Reserved from ${currentBooking.startDate} until ${currentBooking.endDate}`}
                             </div>
                           )}
                         </div>
@@ -409,7 +444,15 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
                       {room.images?.length > 0 && (
                         <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3">
                           {room.images.map((image, index) => (
-                            <img key={`${room.id}-${image}`} src={image} alt={`${room.name}, photo ${index + 1}`} className="h-32 w-full rounded-xl object-cover" loading="lazy" />
+                            <button
+                              key={`${room.id}-${image}`}
+                              type="button"
+                              onClick={() => showLightbox(room.images, index, room.name)}
+                              aria-label={`Open ${room.name} photo ${index + 1} in photo viewer`}
+                              className="overflow-hidden rounded-xl"
+                            >
+                              <img src={image} alt={`${room.name}, photo ${index + 1}`} className="h-32 w-full object-cover" loading="lazy" />
+                            </button>
                           ))}
                         </div>
                       )}
@@ -562,39 +605,25 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, us
                       );
                     })}
                   </select>
-                  <div className="grid grid-cols-2 gap-2">
-                    <label className="text-[10px] font-medium text-[var(--muted-foreground)]">
-                      Check-in
-                      <input
-                        type="date"
-                        value={startDate}
-                        min={today}
-                        onChange={(event) => {
-                          setStartDate(event.target.value);
-                          if (endDate && event.target.value >= endDate) setEndDate("");
-                        }}
-                        className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-xs text-[var(--foreground)]"
-                      />
-                    </label>
-                    <label className="text-[10px] font-medium text-[var(--muted-foreground)]">
-                      Check-out
-                      <input
-                        type="date"
-                        value={endDate}
-                        min={dateAfter(startDate || today)}
-                        onChange={(event) => setEndDate(event.target.value)}
-                        className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-xs text-[var(--foreground)]"
-                      />
-                    </label>
-                  </div>
-                  {selectedRoomConflict && <p role="alert" className="text-xs text-red-600">This room is reserved or booked for part of those dates. Choose another room or date range.</p>}
+                  <label className="block text-[10px] font-medium text-[var(--muted-foreground)]">
+                    Move-In Date
+                    <input
+                      type="date"
+                      value={startDate}
+                      min={today}
+                      onChange={(event) => setStartDate(event.target.value)}
+                      className="mt-1 w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-xs text-[var(--foreground)]"
+                    />
+                  </label>
+                  {selectedRoomConflict && <p role="alert" className="text-xs text-red-600">This room is reserved or occupied for the selected move-in date.</p>}
                   {availabilityError && <p role="status" className="text-xs text-amber-800">Could not load the live calendar. The server will still check for date conflicts when you submit.</p>}
+                  <p className="text-xs text-[var(--muted-foreground)]">Your stay renews monthly. Payment is available after the landlord confirms your booking.</p>
                   <button
                     onClick={handleBook}
-                    disabled={busy || availabilityLoading || !bookRoom || !startDate || !endDate || selectedRoomConflict}
+                    disabled={busy || availabilityLoading || !bookRoom || !startDate || selectedRoomConflict}
                     className="w-full py-3 bg-[var(--primary)] text-white rounded-xl font-semibold text-sm hover:opacity-90 disabled:opacity-60"
                   >
-                    {availabilityLoading ? "Checking availability…" : "📅 Request Booking"}
+                    {availabilityLoading ? "Checking availability…" : busy ? "Booking…" : "Book"}
                   </button>
                   <button
                     onClick={() => onStartChat({

@@ -127,6 +127,11 @@ CREATE POLICY student_insert_bookings ON public.bookings FOR INSERT WITH CHECK (
   )
 );
 
+DROP POLICY IF EXISTS student_cancel_bookings ON public.bookings;
+CREATE POLICY student_cancel_bookings ON public.bookings FOR UPDATE
+  USING (student_id = public.auth_student_id() AND status = 'Pending')
+  WITH CHECK (student_id = public.auth_student_id() AND status = 'Cancelled');
+
 DROP POLICY IF EXISTS landlord_update_bookings ON public.bookings;
 CREATE POLICY landlord_update_bookings ON public.bookings FOR UPDATE
   USING (booking_id IN (SELECT public.my_booking_ids()))
@@ -429,9 +434,257 @@ DO $$ BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE public.boarding_houses;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
+-- Confirmed bookings represent open-ended stays; end_date is the current billing-cycle end.
+CREATE OR REPLACE FUNCTION public.lock_booking_keys()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+  IF auth.uid() IS NOT NULL THEN
+    IF NEW.student_id IS DISTINCT FROM OLD.student_id
+       OR NEW.room_id IS DISTINCT FROM OLD.room_id
+       OR NEW.start_date IS DISTINCT FROM OLD.start_date THEN
+      RAISE EXCEPTION 'Booking student, room and move-in date cannot be changed.';
+    END IF;
+    IF NEW.end_date IS DISTINCT FROM OLD.end_date
+       AND current_setting('app.allow_booking_renewal', TRUE) IS DISTINCT FROM 'on' THEN
+      RAISE EXCEPTION 'Billing-cycle dates can only be changed through the renewal flow.';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION public.reject_booking_during_open_stay()
+RETURNS TRIGGER LANGUAGE plpgsql SET search_path = public AS $$
+BEGIN
+  IF NEW.status IN ('Pending', 'Confirmed') THEN
+    PERFORM pg_advisory_xact_lock(NEW.room_id);
+
+    IF EXISTS (
+      SELECT 1
+      FROM public.bookings current_stay
+      WHERE current_stay.room_id = NEW.room_id
+        AND current_stay.booking_id IS DISTINCT FROM NEW.booking_id
+        AND current_stay.status = 'Confirmed'
+        AND current_stay.actual_end_date IS NULL
+        AND current_stay.start_date < NEW.end_date
+    ) THEN
+      RAISE EXCEPTION 'This room is occupied by an open-ended stay.';
+    END IF;
+
+    IF NEW.status = 'Confirmed' AND EXISTS (
+      SELECT 1
+      FROM public.bookings future_request
+      WHERE future_request.room_id = NEW.room_id
+        AND future_request.booking_id IS DISTINCT FROM NEW.booking_id
+        AND future_request.status = 'Pending'
+        AND future_request.start_date >= NEW.start_date
+        AND future_request.end_date > NEW.start_date
+    ) THEN
+      RAISE EXCEPTION 'This room has a pending booking after the requested move-in date.';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS reject_booking_during_open_stay_trg ON public.bookings;
+CREATE TRIGGER reject_booking_during_open_stay_trg
+  BEFORE INSERT OR UPDATE OF room_id, start_date, end_date, status ON public.bookings
+  FOR EACH ROW EXECUTE FUNCTION public.reject_booking_during_open_stay();
+
+CREATE OR REPLACE FUNCTION public.release_room_after_move_out()
+RETURNS TRIGGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+BEGIN
+  IF NEW.status = 'Completed' AND OLD.status <> 'Completed' THEN
+    UPDATE public.rooms
+    SET availability_status = 'Available'
+    WHERE room_id = NEW.room_id
+      AND NOT EXISTS (
+        SELECT 1
+        FROM public.bookings active_stay
+        WHERE active_stay.room_id = NEW.room_id
+          AND active_stay.booking_id <> NEW.booking_id
+          AND active_stay.status = 'Confirmed'
+          AND active_stay.actual_end_date IS NULL
+      );
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS release_room_after_move_out_trg ON public.bookings;
+CREATE TRIGGER release_room_after_move_out_trg
+  AFTER UPDATE OF status ON public.bookings
+  FOR EACH ROW EXECUTE FUNCTION public.release_room_after_move_out();
+
+CREATE OR REPLACE FUNCTION public.renew_booking(p_booking_id BIGINT)
+RETURNS DATE
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  current_booking public.bookings%ROWTYPE;
+  renewed_end_date DATE;
+BEGIN
+  IF public.auth_user_role() <> 'Student' THEN
+    RAISE EXCEPTION 'Only the student on this booking can renew the stay.';
+  END IF;
+
+  SELECT * INTO current_booking
+  FROM public.bookings
+  WHERE booking_id = p_booking_id
+    AND student_id = public.auth_student_id()
+  FOR UPDATE;
+
+  IF NOT FOUND OR current_booking.status <> 'Confirmed' OR current_booking.actual_end_date IS NOT NULL THEN
+    RAISE EXCEPTION 'This booking is not an active confirmed stay.';
+  END IF;
+  IF current_booking.end_date > CURRENT_DATE + 7 THEN
+    RAISE EXCEPTION 'Stay renewal is available during the seven days before the billing-cycle end.';
+  END IF;
+
+  PERFORM set_config('app.allow_booking_renewal', 'on', TRUE);
+  UPDATE public.bookings
+  SET end_date = (current_booking.end_date + INTERVAL '1 month')::DATE
+  WHERE booking_id = current_booking.booking_id
+  RETURNING end_date INTO renewed_end_date;
+
+  RETURN renewed_end_date;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.renew_booking(BIGINT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.renew_booking(BIGINT) TO authenticated;
+
+CREATE OR REPLACE FUNCTION public.student_move_out_booking(p_booking_id BIGINT)
+RETURNS BIGINT
+LANGUAGE plpgsql SECURITY DEFINER SET search_path = public, pg_temp AS $$
+DECLARE
+  moved_booking_id BIGINT;
+BEGIN
+  IF public.auth_user_role() <> 'Student' THEN
+    RAISE EXCEPTION 'Only the student on this booking can confirm move-out.';
+  END IF;
+
+  UPDATE public.bookings
+  SET status = 'Completed',
+      actual_end_date = CURRENT_DATE
+  WHERE booking_id = p_booking_id
+    AND student_id = public.auth_student_id()
+    AND status = 'Confirmed'
+    AND actual_end_date IS NULL
+    AND start_date <= CURRENT_DATE
+  RETURNING booking_id INTO moved_booking_id;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'This booking is not an active stay that can be moved out.';
+  END IF;
+
+  RETURN moved_booking_id;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.student_move_out_booking(BIGINT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.student_move_out_booking(BIGINT) TO authenticated;
+
+DROP FUNCTION IF EXISTS public.get_public_room_bookings(BIGINT);
+CREATE FUNCTION public.get_public_room_bookings(p_house_id BIGINT)
+RETURNS TABLE (room_id BIGINT, start_date DATE, end_date DATE, status TEXT, is_open_ended BOOLEAN)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT b.room_id, b.start_date, b.end_date, b.status::TEXT,
+         (b.status = 'Confirmed' AND b.actual_end_date IS NULL) AS is_open_ended
+  FROM public.bookings b
+  JOIN public.rooms r ON r.room_id = b.room_id
+  JOIN public.boarding_houses h ON h.house_id = r.house_id
+  WHERE h.house_id = p_house_id
+    AND h.listing_status = 'Published'
+    AND b.status IN ('Pending', 'Confirmed')
+  ORDER BY b.start_date;
+$$;
+REVOKE ALL ON FUNCTION public.get_public_room_bookings(BIGINT) FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_public_room_bookings(BIGINT) TO anon, authenticated;
+
+CREATE TABLE IF NOT EXISTS public.roommate_board_requests (
+  request_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  student_id BIGINT NOT NULL REFERENCES public.students(student_id) ON DELETE CASCADE,
+  room_id BIGINT NOT NULL REFERENCES public.rooms(room_id) ON DELETE CASCADE,
+  move_in_date DATE NOT NULL,
+  is_open BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE public.roommate_board_requests
+  ADD COLUMN IF NOT EXISTS is_open BOOLEAN NOT NULL DEFAULT TRUE;
+
+ALTER TABLE public.roommate_board_requests ENABLE ROW LEVEL SECURITY;
+GRANT SELECT, INSERT ON public.roommate_board_requests TO authenticated;
+REVOKE UPDATE ON public.roommate_board_requests FROM authenticated;
+GRANT UPDATE (is_open) ON public.roommate_board_requests TO authenticated;
+GRANT USAGE, SELECT ON SEQUENCE public.roommate_board_requests_request_id_seq TO authenticated;
+
+DROP POLICY IF EXISTS student_select_own_roommate_board_requests ON public.roommate_board_requests;
+CREATE POLICY student_select_own_roommate_board_requests ON public.roommate_board_requests
+  FOR SELECT TO authenticated USING (student_id = public.auth_student_id());
+DROP POLICY IF EXISTS student_insert_roommate_board_requests ON public.roommate_board_requests;
+CREATE POLICY student_insert_roommate_board_requests ON public.roommate_board_requests
+  FOR INSERT TO authenticated WITH CHECK (
+    student_id = public.auth_student_id()
+    AND move_in_date >= CURRENT_DATE
+    AND EXISTS (
+      SELECT 1
+      FROM public.rooms r
+      JOIN public.boarding_houses h ON h.house_id = r.house_id
+      WHERE r.room_id = roommate_board_requests.room_id
+        AND r.capacity > 1
+        AND r.availability_status = 'Available'
+        AND h.listing_status = 'Published'
+    )
+  );
+DROP POLICY IF EXISTS student_close_own_roommate_board_requests ON public.roommate_board_requests;
+CREATE POLICY student_close_own_roommate_board_requests ON public.roommate_board_requests
+  FOR UPDATE TO authenticated
+  USING (student_id = public.auth_student_id() AND is_open)
+  WITH CHECK (student_id = public.auth_student_id() AND NOT is_open);
+
+CREATE OR REPLACE FUNCTION public.get_public_roommate_requests()
+RETURNS TABLE (
+  request_id BIGINT,
+  student_id BIGINT,
+  account_id BIGINT,
+  full_name TEXT,
+  profile_photo_url TEXT,
+  gender TEXT,
+  academic_year TEXT,
+  pref_sleep_schedule INT,
+  pref_study_habits INT,
+  pref_cleanliness INT,
+  pref_guest_policy INT,
+  house_name TEXT,
+  room_number TEXT,
+  move_in_date DATE
+)
+LANGUAGE sql STABLE SECURITY DEFINER SET search_path = public, pg_temp AS $$
+  SELECT rr.request_id, s.student_id, s.account_id, s.full_name, s.profile_photo_url,
+         s.gender, s.academic_year, s.pref_sleep_schedule, s.pref_study_habits,
+         s.pref_cleanliness, s.pref_guest_policy, h.house_name, r.room_number,
+         rr.move_in_date
+  FROM public.roommate_board_requests rr
+  JOIN public.students s ON s.student_id = rr.student_id
+  JOIN public.rooms r ON r.room_id = rr.room_id
+  JOIN public.boarding_houses h ON h.house_id = r.house_id
+  WHERE rr.is_open
+    AND rr.move_in_date >= CURRENT_DATE
+    AND public.auth_user_role() = 'Student'
+    AND r.availability_status = 'Available'
+    AND h.listing_status = 'Published'
+  ORDER BY rr.created_at DESC;
+$$;
+REVOKE ALL ON FUNCTION public.get_public_roommate_requests() FROM PUBLIC;
+GRANT EXECUTE ON FUNCTION public.get_public_roommate_requests() TO authenticated;
+
 -- Realtime payment changes update student statuses and landlord review queues.
 DO $$ BEGIN
   ALTER PUBLICATION supabase_realtime ADD TABLE public.payments;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+DO $$ BEGIN
+  ALTER PUBLICATION supabase_realtime ADD TABLE public.bookings;
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
 
 NOTIFY pgrst, 'reload schema';

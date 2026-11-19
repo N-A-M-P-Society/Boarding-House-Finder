@@ -26,7 +26,12 @@ const QUICK_REPLIES_LANDLORD = [
   "Please send a valid school ID for verification.",
   "The room will be ready by August 1.",
 ];
-export default function Chat({ userRole, session, chatTarget, onMessagesRead }) {
+const QUICK_REPLIES_ROOMMATE = [
+  "Are you still looking for a roommate?",
+  "Could we discuss our move-in plans?",
+  "Would you like to compare roommate preferences?",
+];
+export default function Chat({ userRole, session, chatTarget, onChatTargetHandled, onMessagesRead }) {
   const [rows, setRows] = useState([]);
   const [names, setNames] = useState({});
   const [myProfilePhotoUrl, setMyProfilePhotoUrl] = useState(
@@ -103,10 +108,12 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
         [chatTarget.accountId]: {
           name: chatTarget.name,
           propertyTitle: chatTarget.propertyTitle,
-          profilePhotoUrl: chatTarget.profilePhotoUrl
+          profilePhotoUrl: chatTarget.profilePhotoUrl,
+          role: chatTarget.role,
         }
       }));
       setActiveConvId(String(chatTarget.accountId));
+      onChatTargetHandled?.();
     }
   }, [chatTarget]);
 
@@ -114,6 +121,7 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
   const peerIds = new Set([...rows.map((m) => (m.sender_id === myAccountId ? m.receiver_id : m.sender_id)), ...Object.keys(extraPeers).map(Number)]);
   const conversations = Array.from(peerIds).map((peerId) => {
     const peerName = names[peerId]?.name || extraPeers[peerId]?.name || "User";
+    const peerRole = names[peerId]?.role || extraPeers[peerId]?.role || (isLandlord ? "student" : "landlord");
     const myName = session?.name || "You";
     const myAvatar = myProfilePhotoUrl || avatarFor(myName);
     const peerAvatar = names[peerId]?.profilePhotoUrl || extraPeers[peerId]?.profilePhotoUrl || avatarFor(peerName);
@@ -126,7 +134,7 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
           senderId: m.sender_id,
           senderName: mine ? "You" : peerName,
           senderAvatar: mine ? myAvatar : peerAvatar,
-          senderRole: mine ? (isLandlord ? "landlord" : "student") : isLandlord ? "student" : "landlord",
+          senderRole: mine ? (isLandlord ? "landlord" : "student") : peerRole,
           content: m.content,
           createdAt: fmtTime(m.created_at),
           read: m.is_read,
@@ -135,10 +143,20 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
       });
     const last = msgs[msgs.length - 1];
     const unread = msgs.filter((m) => !m.read && m.senderId !== myAccountId).length;
-    const base = { id: String(peerId), propertyTitle: extraPeers[peerId]?.propertyTitle || "Direct message", propertyImage: peerAvatar, propertyAddress: "", messages: msgs, lastMessage: last?.content || "No messages yet", lastMessageAt: last?.createdAt || "" };
-    return isLandlord
-      ? { ...base, landlordId: myAccountId, landlordName: myName, landlordAvatar: myAvatar, studentId: peerId, studentName: peerName, studentAvatar: peerAvatar, unreadByLandlord: unread, unreadByStudent: 0 }
-      : { ...base, studentId: myAccountId, studentName: myName, studentAvatar: myAvatar, landlordId: peerId, landlordName: peerName, landlordAvatar: peerAvatar, unreadByStudent: unread, unreadByLandlord: 0 };
+    const base = {
+      id: String(peerId),
+      peerName,
+      peerAvatar,
+      peerRole,
+      propertyTitle: extraPeers[peerId]?.propertyTitle || "Direct message",
+      propertyImage: peerAvatar,
+      propertyAddress: "",
+      messages: msgs,
+      lastMessage: last?.content || "No messages yet",
+      lastMessageAt: last?.createdAt || "",
+      unreadCount: unread,
+    };
+    return base;
   });
   const activeConv = conversations.find((c) => c.id === activeConvId) || conversations[0];
 
@@ -168,19 +186,17 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
         <div>
           <div className="text-3xl mb-3">💬</div>
           <p className="text-sm font-medium">No conversations yet</p>
-          <p className="text-xs text-[var(--muted-foreground)] mt-1">{error || "Open a property and tap “Message Landlord” to start one."}</p>
+          <p className="text-xs text-[var(--muted-foreground)] mt-1">{error || "Open a property or roommate request and tap Message to start a conversation."}</p>
         </div>
       </div>
     );
   }
   const myRole = isLandlord ? "landlord" : "student";
-  const myId = isLandlord ? activeConv.landlordId : activeConv.studentId;
-  const myName = isLandlord ? activeConv.landlordName : activeConv.studentName;
-  const otherName = isLandlord ? activeConv.studentName : activeConv.landlordName;
-  const otherAvatar = isLandlord ? activeConv.studentAvatar : activeConv.landlordAvatar;
-  const otherRole = isLandlord ? "student" : "landlord";
-  const unreadCount = isLandlord ? activeConv.unreadByLandlord : activeConv.unreadByStudent;
-  const quickReplies = isLandlord ? QUICK_REPLIES_LANDLORD : QUICK_REPLIES_STUDENT;
+  const myId = myAccountId;
+  const otherName = activeConv.peerName;
+  const otherAvatar = activeConv.peerAvatar;
+  const otherRole = activeConv.peerRole;
+  const quickReplies = isLandlord ? QUICK_REPLIES_LANDLORD : otherRole === "student" ? QUICK_REPLIES_ROOMMATE : QUICK_REPLIES_STUDENT;
   async function sendMessage(content) {
     if (!content.trim()) return;
     setInput("");
@@ -193,7 +209,7 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
   }
   const filteredConvs = conversations.filter(
     (c) =>
-      (isLandlord ? c.studentName : c.landlordName).toLowerCase().includes(search.toLowerCase()) ||
+      c.peerName.toLowerCase().includes(search.toLowerCase()) ||
       c.propertyTitle.toLowerCase().includes(search.toLowerCase()),
   );
   function rolePill(role) {
@@ -223,17 +239,17 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={isLandlord ? "Search students…" : "Search landlords…"}
+            placeholder="Search conversations…"
             className="w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)] transition-all"
           />
         </div>
 
         <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)]/60">
           {filteredConvs.map((conv) => {
-            const displayName = isLandlord ? conv.studentName : conv.landlordName;
-            const displayAvatar = isLandlord ? conv.studentAvatar : conv.landlordAvatar;
-            const displayRole = isLandlord ? "student" : "landlord";
-            const unread = isLandlord ? conv.unreadByLandlord : conv.unreadByStudent;
+            const displayName = conv.peerName;
+            const displayAvatar = conv.peerAvatar;
+            const displayRole = conv.peerRole;
+            const unread = conv.unreadCount;
             const isActive = conv.id === activeConv.id;
             return (
               <button
@@ -314,7 +330,9 @@ export default function Chat({ userRole, session, chatTarget, onMessagesRead }) 
             <>
               🎓{" "}
               <span>
-                You are a <strong>student</strong> — inquiring about a rental listing from the landlord.
+                {otherRole === "student"
+                  ? <>You are a <strong>student</strong> — messaging another student about their roommate request.</>
+                  : <>You are a <strong>student</strong> — inquiring about a rental listing from the landlord.</>}
               </span>
             </>
           )}

@@ -1,5 +1,6 @@
 
 import { useRef, useState } from "react";
+import ImageLightbox from "./ImageLightbox.jsx";
 
 // PROPERTY CARD COMPONENT
 // This component displays a rental property's information in a card format.
@@ -29,6 +30,7 @@ export default function PropertyCard({
   inComparison
 }) {
   const [imageIndex, setImageIndex] = useState(0);
+  const [lightboxOpen, setLightboxOpen] = useState(false);
   const touchStartX = useRef(null);
   const suppressImageClick = useRef(false);
   const images = property.images?.length ? property.images : ["/unirent-logo.png"];
@@ -96,21 +98,6 @@ export default function PropertyCard({
           badges, safety score, walking time, and review rating. */}
       <div
         className="relative h-48 touch-pan-y overflow-hidden bg-[var(--muted)]"
-        role="group"
-        tabIndex={images.length > 1 ? 0 : undefined}
-        aria-label={`${property.title} photo carousel, ${imageIndex + 1} of ${images.length}`}
-        onKeyDown={(event) => {
-          if (images.length < 2) return;
-          if (event.key === "ArrowLeft") {
-            event.preventDefault();
-            event.stopPropagation();
-            setImageIndex((index) => (index - 1 + images.length) % images.length);
-          } else if (event.key === "ArrowRight") {
-            event.preventDefault();
-            event.stopPropagation();
-            setImageIndex((index) => (index + 1) % images.length);
-          }
-        }}
         onClick={(event) => {
           if (suppressImageClick.current) {
             event.stopPropagation();
@@ -131,17 +118,30 @@ export default function PropertyCard({
           }
           touchStartX.current = null;
         }}
-        aria-label={`${property.title} photos`}
       >
-        <img
-          src={images[imageIndex]}
-          alt={`${property.title}, photo ${imageIndex + 1} of ${images.length}`}
-          className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
-        />
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            if (suppressImageClick.current) {
+              suppressImageClick.current = false;
+              return;
+            }
+            setLightboxOpen(true);
+          }}
+          aria-label={`Open ${property.title} photo ${imageIndex + 1} in photo viewer`}
+          className="h-full w-full"
+        >
+          <img
+            src={images[imageIndex]}
+            alt={`${property.title}, photo ${imageIndex + 1} of ${images.length}`}
+            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
+          />
+        </button>
 
         {/* Add a dark gradient overlay over the bottom of the image.
             This helps text displayed over the image remain readable. */}
-        <div className="absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
+        <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/40 to-transparent" />
 
         {/* PROPERTY BADGES */}
         {/* Display up to two badges assigned to the property.
@@ -159,6 +159,15 @@ export default function PropertyCard({
             </span>
           ))}
         </div>
+        {lightboxOpen && (
+          <ImageLightbox
+            images={images}
+            initialIndex={imageIndex}
+            title={property.title}
+            onClose={() => setLightboxOpen(false)}
+            onIndexChange={setImageIndex}
+          />
+        )}
 
         {/* SAFETY SCORE DISPLAY */}
         {/* Position the safety score at the upper-right corner of the image. */}

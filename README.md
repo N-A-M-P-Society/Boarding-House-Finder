@@ -24,17 +24,17 @@ Finding off-campus housing is stressful: listings are scattered across social me
 | 🗺️ **Leaflet map** with OpenStreetMap tiles, safety-colored price pins, campus + gate markers, and an 800 m (≈10 min) walk radius | ✅ Live |
 | 🛡️ **Property verification** – admins approve/reject listings and landlord documents; badges (WiFi, Water 24/7, Vetted Safe) are granted by admins | ✅ Live |
 | 📊 **Safety score engine (0–10)** – weighted from police distance, lighting, gated access, and CCTV; non-gated listings receive partial credit, non-required CCTV is neutral, and admins can recalculate scores from the latest inspection | ✅ Live |
-| 💬 **Real-time chat** between students and landlords with unread counts that clear when a conversation is opened | ✅ Live |
-| 📅 **Date-based room bookings** – database-backed availability calendars, overlapping requests blocked by the database, and landlord move-out dates that release rooms | ✅ Live |
+| 💬 **Real-time chat** between students and landlords or roommate-request students, with unread counts that clear when a conversation is opened | ✅ Live |
+| 📅 **Open-ended monthly stays** – move-in-only booking, monthly renewals, student move-out confirmation, and database-backed room release | ✅ Live |
 | 🧭 **Landlord calendar** – filter by property and room; click bookings to see the student and booking dates | ✅ Live |
 | 💸 **Manual payments** – students submit monthly rent or security-deposit details with private proof; landlords accept or reject with a reason | ✅ Live (no online payment gateway) |
 | ❤️ **Saved listings** and roommate-preference quiz (stored on the student profile) | ✅ Live |
 | ⭐ **Verified student reviews** – only students with a confirmed/completed booking can review; admins can hide abusive reviews | ✅ Live |
 | 🧾 **Admin audit log** of every moderation action | ✅ Live |
 | ⚖️ **Side-by-side comparison** of up to 4 listings | ✅ Live (kept in memory per session) |
-| 🖼️ **Profile, listing, and room photos** with carousel keyboard controls | ✅ Live |
+| 🖼️ **Listing and room photos** open in a keyboard-navigable lightbox; arrow keys are scoped to property views and the lightbox | ✅ Live |
 | 📎 **Landlord verification documents** (private Supabase Storage) | ✅ Live |
-| 🤝 **Roommate matching and vouching** | 🧪 Not implemented; roommate inquiries continue in Messages |
+| 🤝 **Opt-in roommate board** with student-to-student messages | ✅ Live |
 
 ---
 
@@ -79,9 +79,11 @@ For a **new development project**, open Supabase → **SQL Editor** and run thes
    - a read policy so safety breakdowns of published houses are public
    - Supabase Storage buckets and policies for public photos and private verification documents
    - booking vacancy dates and a privacy-safe RPC for published room availability
+   - monthly stay renewal/move-out RPCs, open-ended room reservation checks, and availability release
+   - opt-in roommate board posts in a separate `roommate_board_requests` table, with a privacy-limited public RPC and owner-only post controls
    - payment rejection reasons, student/landlord payment policies, private receipt access, and Realtime payment updates
    - a starter ADDU campus gate (**replace with your real gate coordinates**)
-   - Realtime enabled for `messages` and `boarding_houses` so messages and listing score changes update live
+   - Realtime enabled for `messages`, `boarding_houses`, `payments`, and `bookings` so conversations, listing scores, payments, and booking decisions update live
 
 For an **existing project**, do not rerun the destructive schema script; run the updated `supabase_additions.sql` only.
 
@@ -145,16 +147,24 @@ Security is enforced in the database through RLS and triggers (`supabase_schema.
 
 ## 📅 How room bookings work
 
-- Students select check-in and check-out dates; a pending request reserves those dates while the landlord reviews it.
-- The database prevents overlapping pending or confirmed bookings. Public calendars show date status only, not the tenant’s name.
-- Landlords can filter their calendar by property and room, open a booking to view who booked it, and record a move-out date. The move-out date is the first day the room can be booked again.
+- Students select a room and one move-in date. A pending request covers the first monthly cycle and must be confirmed by the landlord before payment is available.
+- A confirmed booking represents an open-ended stay. Its billing-cycle end is extended monthly; renewal is offered during the final seven days. The database prevents another booking from being confirmed after the open-ended stay starts.
+- Students can confirm move-out from the renewal prompt or booking details. The completed stay releases the room; landlords can also record a move-out date.
+- Public calendars show availability without tenant names and keep confirmed open-ended stays marked occupied until move-out.
 
 ## 💸 How manual payments work
 
-- After a booking is confirmed, students can submit a monthly rent or security-deposit amount, payment method, and receipt/proof file (JPG, PNG, WebP, or PDF; up to 10 MB).
+- After a booking is confirmed, students can submit a monthly rent or security-deposit amount, payment method, and receipt/proof file (JPG, PNG, WebP, or PDF; up to 10 MB). Renewing a stay opens the payment form for its next monthly cycle.
 - Proof files are stored in the private `unirent-verification` bucket. The related student and property landlord receive short-lived signed links to view the proof.
 - Landlords review submissions in **Dashboard → Payments**, then accept them or reject them with a reason. The student's payment status updates in real time.
 - This is a manual proof-and-review workflow; no online payment gateway is connected.
+
+## 🤝 Roommate board
+
+- Sending a roommate inquiry to the landlord remains available. Students can separately opt in to publish the request to other students.
+- Public posts include the student's name, profile photo, gender, roommate preferences, selected property/room, and move-in date. Private contact details and the note to the landlord are not exposed.
+- Students can message another student's post directly in Messages and close their own post at any time.
+- The board uses `roommate_board_requests`, separate from any existing legacy `roommate_requests` table; applying the additions does not truncate or alter that legacy table.
 
 ---
 

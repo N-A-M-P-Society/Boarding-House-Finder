@@ -109,6 +109,7 @@ function Shell({ session, setSession }) {
   const [selectedPropertyId, setSelectedPropertyId] = useState(null);
   const [comparedIds, setComparedIds] = useState([]);
   const [chatTarget, setChatTarget] = useState(null);
+  const [dashboardInitialTab, setDashboardInitialTab] = useState("overview");
   const [isDark, setIsDark] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
   const isAuthPage = AUTH_PAGES.includes(page);
@@ -130,7 +131,13 @@ function Shell({ session, setSession }) {
     } catch {}
   }, [isDark, themeReady]);
   function navigate(p) {
+    if (p === "student-dashboard") setDashboardInitialTab("overview");
     setPage(p);
+    document.getElementById("main-content")?.scrollTo({ top: 0, behavior: "smooth" });
+  }
+  function navigateToPaymentStep() {
+    setDashboardInitialTab("payments");
+    setPage("student-dashboard");
     document.getElementById("main-content")?.scrollTo({ top: 0, behavior: "smooth" });
   }
   function handleRoleNav(authPage, role) {
@@ -226,6 +233,7 @@ function Shell({ session, setSession }) {
               setChatTarget(target || null);
               navigate("chat");
             }}
+            onBookingCreated={navigateToPaymentStep}
             userRole={userRole}
             session={session}
             onRequireLogin={() => handleRoleNav("login-student", "student")}
@@ -244,13 +252,22 @@ function Shell({ session, setSession }) {
             displayName={displayName}
             session={session}
             onProfilePhotoChange={handleProfilePhotoChange}
+            initialTab={dashboardInitialTab}
           />
         )}
         {page === "landlord-dashboard" && (
           <LandlordDashboard onNavigate={(p) => navigate(p)} displayName={displayName} session={session} onProfilePhotoChange={handleProfilePhotoChange} />
         )}
         {page === "admin" && <AdminConsole displayName={displayName} session={session} onProfilePhotoChange={handleProfilePhotoChange} />}
-        {page === "chat" && <Chat userRole={userRole} session={session} chatTarget={chatTarget} onMessagesRead={refreshUnreadMessageCount} />}
+        {page === "chat" && (
+          <Chat
+            userRole={userRole}
+            session={session}
+            chatTarget={chatTarget}
+            onChatTargetHandled={() => setChatTarget(null)}
+            onMessagesRead={refreshUnreadMessageCount}
+          />
+        )}
         {page === "comparison" && (
           <Comparison
             comparedIds={comparedIds}

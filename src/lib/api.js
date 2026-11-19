@@ -686,6 +686,7 @@ export async function fetchPublicRoomBookings(houseId) {
     startDate: booking.start_date,
     endDate: booking.end_date,
     status: booking.status,
+    openEnded: booking.is_open_ended,
   }));
 }
 
@@ -740,6 +741,7 @@ export async function fetchBookings() {
     endDate: b.end_date,
     actualEndDate: b.actual_end_date || null,
     status: b.status,
+    openEnded: b.status === "Confirmed" && !b.actual_end_date,
 
     // Keep only the date portion of the creation timestamp.
     createdAt: (b.created_at || "").slice(0, 10)
@@ -775,6 +777,24 @@ export async function completeBooking(bookingId, actualEndDate) {
   fail(error);
   if (!data) throw new Error("This booking is no longer confirmed. Refresh the bookings list and try again.");
   return data.booking_id;
+}
+
+export async function renewBooking(bookingId) {
+  const { data, error } = await supabase.rpc("renew_booking", {
+    p_booking_id: Number(bookingId),
+  });
+
+  fail(error);
+  return data;
+}
+
+export async function studentMoveOutBooking(bookingId) {
+  const { data, error } = await supabase.rpc("student_move_out_booking", {
+    p_booking_id: Number(bookingId),
+  });
+
+  fail(error);
+  return data;
 }
 
 /*
@@ -1021,6 +1041,57 @@ export async function fetchMessages(myAccountId) {
   fail(error);
 
   return data || [];
+}
+
+export async function fetchRoommateRequests() {
+  const { data, error } = await supabase.rpc("get_public_roommate_requests");
+  fail(error);
+
+  return (data || []).map((request) => ({
+    id: String(request.request_id),
+    studentId: String(request.student_id),
+    accountId: Number(request.account_id),
+    name: request.full_name,
+    profilePhotoUrl: request.profile_photo_url || "",
+    gender: request.gender || "",
+    academicYear: request.academic_year || "",
+    preferences: {
+      sleep: request.pref_sleep_schedule,
+      study: request.pref_study_habits,
+      cleanliness: request.pref_cleanliness,
+      guests: request.pref_guest_policy,
+    },
+    propertyTitle: request.house_name,
+    roomName: request.room_number,
+    moveInDate: request.move_in_date,
+  }));
+}
+
+export async function createRoommateRequest({ studentId, roomId, moveInDate }) {
+  const { data, error } = await supabase
+    .from("roommate_board_requests")
+    .insert({
+      student_id: Number(studentId),
+      room_id: Number(roomId),
+      move_in_date: moveInDate,
+    })
+    .select("request_id")
+    .single();
+
+  fail(error);
+  return data.request_id;
+}
+
+export async function closeRoommateRequest(requestId) {
+  const { data, error } = await supabase
+    .from("roommate_board_requests")
+    .update({ is_open: false })
+    .eq("request_id", Number(requestId))
+    .select("request_id")
+    .maybeSingle();
+
+  fail(error);
+  if (!data) throw new Error("This roommate post is no longer available. Refresh the list and try again.");
 }
 
 /*

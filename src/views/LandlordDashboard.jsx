@@ -33,7 +33,7 @@ function AvailabilityCalendar({ rooms, bookings, onEvent }) {
       if (booking.roomId !== roomId || ["cancelled", "completed"].includes(booking.status.toLowerCase())) return false;
       const start = new Date(`${booking.startDate}T00:00:00`);
       const end = new Date(`${booking.endDate}T00:00:00`);
-      return start < nextMonthStart && end > monthStart;
+      return start < nextMonthStart && (booking.openEnded || end > monthStart);
     });
   }
   return (
@@ -314,7 +314,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     .filter((booking) =>
       ["Pending", "Confirmed"].includes(booking.status) &&
       booking.startDate <= todayDate &&
-      todayDate < booking.endDate
+      (booking.openEnded || todayDate < booking.endDate)
     )
     .map((booking) => booking.roomId));
   const availableRooms = myProperties.flatMap((property) => property.rooms)
@@ -455,7 +455,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
               </div>
               <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
                 <table className="w-full min-w-[48rem] text-sm">
-                  <thead className="bg-[var(--muted)]"><tr>{["Student", "Property / room", "Lease dates", "Rent", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                  <thead className="bg-[var(--muted)]"><tr>{["Student", "Property / room", "Move-in / cycle end", "Rent", "Status", "Details"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
                   <PaginatedTableBody
                     rows={filteredBookings}
                     columns={6}
@@ -696,8 +696,8 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 ["Status", bookingDetail.status],
                 ["Property", bookingDetail.propertyTitle],
                 ["Room", bookingDetail.roomName],
-                ["Lease starts", bookingDetail.startDate],
-                ["Lease ends", bookingDetail.endDate],
+                ["Move-in date", bookingDetail.startDate],
+                ["Current billing cycle ends", bookingDetail.endDate],
                 ...(bookingDetail.actualEndDate ? [["Room released from", bookingDetail.actualEndDate]] : []),
                 ["Monthly rent", `₱${Number(bookingDetail.monthlyRate).toLocaleString()}`],
                 ["Request received", bookingDetail.createdAt || "—"],
@@ -889,8 +889,10 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 <div className="text-sm font-medium">{roomDetail.room.propertyTitle}</div>
               </div>
               <div>
-                <div className="text-xs text-[var(--muted-foreground)]">Booking dates</div>
-                <div className="text-sm font-medium">{roomDetail.booking.startDate} → {roomDetail.booking.endDate}</div>
+                <div className="text-xs text-[var(--muted-foreground)]">Move-in / billing cycle</div>
+                <div className="text-sm font-medium">
+                  {roomDetail.booking.startDate} → {roomDetail.booking.openEnded ? "ongoing stay" : roomDetail.booking.endDate}
+                </div>
               </div>
               <div>
                 <div className="text-xs text-[var(--muted-foreground)]">Booked by</div>
