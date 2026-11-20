@@ -9,6 +9,7 @@ function walkingColor(mins) {
 }
 export default function Listings({ onNavigate, onSelectProperty, comparedIds, onCompare, userRole, session }) {
   const [search, setSearch] = useState("");
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [genderFilter, setGenderFilter] = useState("");
   const [maxRent, setMaxRent] = useState("15000");
   const [minSafety, setMinSafety] = useState(0);
@@ -39,18 +40,34 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden lg:flex-row">
       {/* Sidebar filters */}
-      <aside className="max-h-[34vh] w-full flex-shrink-0 space-y-4 overflow-y-auto border-b border-[var(--border)] bg-[var(--card)] p-4 lg:max-h-none lg:w-72 lg:space-y-5 lg:border-b-0 lg:border-r xl:w-80">
+      <aside className={`w-full flex-shrink-0 space-y-4 overflow-y-auto border-b border-[var(--border)] bg-[var(--card)] p-4 lg:max-h-none lg:w-72 lg:space-y-5 lg:border-b-0 lg:border-r xl:w-80 ${mobileFiltersOpen ? "max-h-[38vh]" : "max-h-28"}`}>
         {/* Search */}
         <div>
-          <input
-            type="text"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search listings..."
-            className="w-full px-3 py-2.5 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)] focus:border-[var(--ring)] transition-all"
-          />
+          <div className="flex items-center gap-2">
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search listings..."
+              className="min-w-0 flex-1 rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2.5 text-sm outline-none transition-all focus:border-[var(--ring)] focus:ring-2 focus:ring-[var(--ring)]"
+            />
+            <button
+              type="button"
+              aria-expanded={mobileFiltersOpen}
+              aria-controls="browse-filters"
+              onClick={() => setMobileFiltersOpen((open) => !open)}
+              className="shrink-0 rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2.5 text-xs font-semibold text-[var(--foreground)] lg:hidden"
+            >
+              {mobileFiltersOpen ? "Hide filters" : "Filters"}
+            </button>
+          </div>
+          <p className="mt-2 text-[10px] text-[var(--muted-foreground)] lg:hidden">
+            {userRole === "landlord" ? "Your listings: " : ""}
+            {filtered.length} listing{filtered.length !== 1 ? "s" : ""} found
+          </p>
         </div>
 
+        <div id="browse-filters" className={`${mobileFiltersOpen ? "block" : "hidden"} space-y-4 lg:block`}>
         <div>
           <label htmlFor="gender-filter" className="mb-2 block text-xs font-semibold uppercase tracking-wider text-[var(--muted-foreground)]">
             Boarding-house gender policy
@@ -159,16 +176,17 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
           </div>
         </div>
 
-        <div className="border-t border-[var(--border)] pt-2 text-xs text-[var(--muted-foreground)]">
+        <div className="hidden border-t border-[var(--border)] pt-2 text-xs text-[var(--muted-foreground)] lg:block">
           {userRole === "landlord" ? "Your listings: " : ""}
           {filtered.length} listing{filtered.length !== 1 ? "s" : ""} found
+        </div>
         </div>
       </aside>
 
       {/* Main content: map + cards */}
       <div className="flex min-h-0 flex-1 flex-col overflow-hidden lg:flex-row">
         {/* Leaflet map */}
-        <div className="relative h-[42%] min-h-48 flex-shrink-0 lg:h-auto lg:min-h-0 lg:flex-1">
+        <div className="relative h-[36%] min-h-64 flex-shrink-0 lg:h-auto lg:min-h-0 lg:flex-1">
           <LeafletMap
             properties={filtered}
             campus={campus}
