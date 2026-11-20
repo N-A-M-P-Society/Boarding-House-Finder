@@ -7,6 +7,7 @@ import {
   createRoom,
   completeBooking,
   fetchBookings,
+  fetchLandlordInvoiceBalances,
   fetchPayments,
   getPaymentProofUrl,
   setPaymentStatus,
@@ -33,18 +34,17 @@ const ROOMMATE_PREFERENCE_LABELS = {
   cleanliness: { 1: "Very clean", 2: "Very clean", 3: "Organized chaos", 4: "Generally tidy", 5: "Spotless" },
   guests: { 1: "No guests", 2: "Occasional guests", 3: "Frequent guests" },
 };
-function AvailabilityCalendar({ rooms, bookings, onEvent }) {
+function AvailabilityCalendar({ rooms, bookings, onEvent, year }) {
   const statusClasses = {
     available: "bg-emerald-100 text-emerald-700",
     reserved: "bg-amber-100 text-amber-700",
     occupied: "bg-red-100 text-red-700",
   };
   function bookingForMonth(roomId, monthIndex) {
-    const year = new Date().getFullYear();
     const monthStart = new Date(year, monthIndex, 1);
     const nextMonthStart = new Date(year, monthIndex + 1, 1);
     return bookings.find((booking) => {
-      if (booking.roomId !== roomId || ["cancelled", "completed"].includes(booking.status.toLowerCase())) return false;
+      if (booking.roomId !== roomId || ["cancelled", "completed", "declined"].includes(booking.status.toLowerCase())) return false;
       const start = new Date(`${booking.startDate}T00:00:00`);
       const end = new Date(`${booking.endDate}T00:00:00`);
       return start < nextMonthStart && (booking.openEnded || end > monthStart);
@@ -83,8 +83,8 @@ function AvailabilityCalendar({ rooms, bookings, onEvent }) {
                   onClick={() => booking && onEvent(room, status, month, booking)}
                   disabled={!booking}
                   className={`flex h-12 min-w-0 flex-col items-center justify-center rounded-lg border border-[var(--border)] text-[9px] font-semibold uppercase ${booking ? "transition-colors hover:ring-2 hover:ring-[var(--ring)]" : "cursor-default"} ${statusClasses[status] || statusClasses.available}`}
-                  aria-label={`${room.name}, ${month} ${new Date().getFullYear()}: ${status}${booking ? `, booked by ${booking.studentName}` : ""}`}
-                  title={`${month} ${new Date().getFullYear()} · ${status}${booking ? ` · ${booking.studentName}` : ""}`}
+                  aria-label={`${room.name}, ${month} ${year}: ${status}${booking ? `, booked by ${booking.studentName}` : ""}`}
+                  title={`${month} ${year} · ${status}${booking ? ` · ${booking.studentName}` : ""}`}
                 >
                   <span>{status}</span>
                   {booking && <span className="block max-w-full truncate px-1 text-[8px] font-medium normal-case">{booking.studentName}</span>}
@@ -101,6 +101,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   const { properties: PROPERTIES, reload } = useData();
   const [bookings, setBookings] = useState([]);
   const [payments, setPayments] = useState([]);
+  const [invoiceBalances, setInvoiceBalances] = useState([]);
   const [selectedPaymentReview, setSelectedPaymentReview] = useState(null);
   const [rejectingPayment, setRejectingPayment] = useState(false);
   const [paymentReviewReason, setPaymentReviewReason] = useState("");
@@ -162,6 +163,15 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       return error.message;
     }
   }
+  async function refreshInvoiceBalances() {
+    try {
+      setInvoiceBalances(await fetchLandlordInvoiceBalances());
+      return "";
+    } catch (error) {
+      setBookingNotice({ title: "Payment balances could not be loaded", message: error.message, error: true });
+      return error.message;
+    }
+  }
   async function refreshRoommateMatchRequests() {
     try {
       setRoommateMatchRequests(await fetchLandlordRoommateMatchRequests());
@@ -211,11 +221,12 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     try {
       await setPaymentStatus(payment.id, status, reason);
       const refreshError = await refreshPayments();
+      const balanceRefreshError = await refreshInvoiceBalances();
       const action = status === "Verified" ? "accepted" : "rejected";
       setBookingNotice({
         title: `Payment ${action}`,
-        message: `${payment.studentName}'s ${payment.paymentType.toLowerCase()} payment for ${payment.propertyTitle} was ${action}.${refreshError ? ` Payment list could not be refreshed: ${refreshError}` : ""}`,
-        error: Boolean(refreshError),
+        message: `${payment.studentName}'s ${payment.paymentType.toLowerCase()} payment for ${payment.propertyTitle} was ${action}.${refreshError ? ` Payment list could not be refreshed: ${refreshError}` : ""}${balanceRefreshError ? ` Balance tracker could not be refreshed: ${balanceRefreshError}` : ""}`,
+        error: Boolean(refreshError || balanceRefreshError),
       });
       setSelectedPaymentReview(null);
       setRejectingPayment(false);
@@ -247,13 +258,15 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
     }
     try {
       await setBookingStatus(booking.id, status);
+      setBookings((current) => current.map((item) => item.id === booking.id ? { ...item, status } : item));
       const refreshError = await refreshBookings();
+      const balanceRefreshError = await refreshInvoiceBalances();
       setBookingDetail(null);
       const action = status === "Confirmed" ? "confirmed" : booking.status === "Confirmed" ? "cancelled" : "declined";
       setBookingNotice({
         title: `Booking ${action}`,
-        message: `${booking.studentName}'s booking for ${booking.roomName} was ${action}.${refreshError ? ` The booking list could not be refreshed: ${refreshError}` : ""}`,
-        error: Boolean(refreshError),
+        message: `${booking.studentName}'s booking for ${booking.roomName} was ${action}.${refreshError ? ` The booking list could not be refreshed: ${refreshError}` : ""}${balanceRefreshError ? ` Payment balances could not be refreshed: ${balanceRefreshError}` : ""}`,
+        error: Boolean(refreshError || balanceRefreshError),
       });
     } catch (error) {
       setBookingNotice({ title: "Booking update failed", message: error.message, error: true });
@@ -291,6 +304,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   useEffect(() => {
     refreshBookings();
     refreshPayments();
+    refreshInvoiceBalances();
   }, [session?.landlordId]);
   useEffect(() => {
     if (!session?.accountId) return;
@@ -298,6 +312,10 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       .channel(`landlord-payments-${session.accountId}`)
       .on("postgres_changes", { event: "*", schema: "public", table: "payments" }, () => {
         refreshPayments();
+        refreshInvoiceBalances();
+      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "invoices" }, () => {
+        refreshInvoiceBalances();
       })
       .subscribe();
     return () => {
@@ -353,6 +371,33 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       await reload();
     } catch (error) {
       setListingPhotoError(error.message);
+    } finally {
+      setListingPhotoBusy(false);
+    }
+  }
+  async function removeListingPhoto(photoIndex) {
+    if (!listingDetail || listingPhotoBusy) return;
+    const previousImages = listingDetail.images || [];
+    const currentImages = (listingDetail.images || [])
+      .filter((image) => typeof image === "string" && !image.startsWith("data:"));
+    const imageUrls = currentImages.filter((_, index) => index !== photoIndex);
+    setListingDetail((current) => current ? { ...current, images: imageUrls } : current);
+    setListingPhotoBusy(true);
+    setListingPhotoError("");
+    try {
+      await updateHouse(listingDetail.id, { image_urls: imageUrls });
+    } catch (error) {
+      setListingDetail((current) => current?.id === listingDetail.id
+        ? { ...current, images: previousImages }
+        : current);
+      setListingPhotoError(error.message);
+      setListingPhotoBusy(false);
+      return;
+    }
+    try {
+      await reload();
+    } catch (error) {
+      setListingPhotoError(`Photo removed, but the listing could not be refreshed: ${error.message}`);
     } finally {
       setListingPhotoBusy(false);
     }
@@ -513,10 +558,42 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
   }, [activeTab, session?.landlordId]);
   const [selectedCalendarPropertyId, setSelectedCalendarPropertyId] = useState("");
   const [selectedRoom, setSelectedRoom] = useState("all");
+  const [calendarYear, setCalendarYear] = useState(() => new Date().getFullYear());
+  const currentCalendarYear = new Date().getFullYear();
   const [roomDetail, setRoomDetail] = useState(null);
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key !== "Escape") return;
+      if (!selectedPaymentReview && !bookingDetail && !listingDetail && !roomDetail) return;
+      event.preventDefault();
+
+      if (selectedPaymentReview) {
+        closePaymentReview();
+      } else if (bookingDetail) {
+        setBookingDetail(null);
+      } else if (listingDetail) {
+        if (listingPhotoBusy || roomEditBusy) return;
+        if (roomEditForm) {
+          setRoomEditForm(null);
+          setRoomEditId("");
+          setRoomEditMode("");
+          setRoomEditPhotoFiles([]);
+          setRoomEditError("");
+        } else {
+          setListingDetail(null);
+        }
+      } else if (roomDetail) {
+        setRoomDetail(null);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [selectedPaymentReview, paymentBusyId, bookingDetail, listingDetail, listingPhotoBusy, roomEditBusy, roomEditForm, roomDetail]);
   const myProperties = PROPERTIES.filter((p) => p.landlordId === String(session?.landlordId));
   const myBookings = bookings.filter((booking) => myProperties.some((property) => property.id === booking.propertyId));
   const myPayments = payments.filter((payment) => payment.landlordId === String(session?.landlordId));
+  const myInvoiceBalances = invoiceBalances.filter((invoice) => invoice.landlordId === String(session?.landlordId));
   const currentPaymentReview = selectedPaymentReview
     ? payments.find((payment) => payment.id === selectedPaymentReview.id) || selectedPaymentReview
     : null;
@@ -807,12 +884,31 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
 
           <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)] p-5">
             <div className="mb-4 flex items-center justify-between">
-              <span className="font-semibold text-lg">{new Date().getFullYear()}</span>
-              <span className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-medium">Year</span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setCalendarYear((year) => Math.max(currentCalendarYear, year - 1))}
+                  disabled={calendarYear <= currentCalendarYear}
+                  aria-label="Previous year"
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold hover:bg-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  ←
+                </button>
+                <span aria-live="polite" className="min-w-16 text-center font-semibold text-lg">{calendarYear}</span>
+                <button
+                  type="button"
+                  onClick={() => setCalendarYear((year) => year + 1)}
+                  aria-label="Next year"
+                  className="rounded-lg border border-[var(--border)] px-3 py-2 text-sm font-semibold hover:bg-[var(--muted)]"
+                >
+                  →
+                </button>
+              </div>
             </div>
             <AvailabilityCalendar
               rooms={visibleCalendarRooms}
               bookings={bookings}
+              year={calendarYear}
               onEvent={(room, status, month, booking) => setRoomDetail({ room, status, month, booking })}
             />
             <div className="mt-4 flex flex-wrap gap-4 text-xs">
@@ -833,6 +929,37 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
 
       {activeTab === "payments" && (
         <div className="space-y-4">
+          <section className="space-y-3">
+            <div>
+              <h2 className="font-display text-xl font-semibold">Room payment tracker</h2>
+              <p className="mt-1 text-sm text-[var(--muted-foreground)]">Each renter has an individual balance. Pending submissions are shown separately while you review them.</p>
+            </div>
+            <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
+              <table className="w-full min-w-[76rem] text-sm">
+                <thead className="bg-[var(--muted)]"><tr>{["Renter", "Property / room", "Invoice", "Period / due date", "Amount due", "Verified", "Pending review", "Remaining", "Status"].map((heading) => <th key={heading} className="px-3 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                <PaginatedTableBody
+                  rows={myInvoiceBalances}
+                  columns={9}
+                  emptyMessage="No renter invoices have been generated for your bookings."
+                  renderRow={(invoice) => (
+                    <tr key={invoice.id} className="align-top">
+                      <td className="px-3 py-3 font-medium">{invoice.studentName}</td>
+                      <td className="px-3 py-3">{invoice.propertyTitle} · {invoice.roomName}</td>
+                      <td className="px-3 py-3">{invoice.paymentType}</td>
+                      <td className="px-3 py-3 text-xs">{invoice.periodStart}–{invoice.periodEnd}<span className="block text-[var(--muted-foreground)]">Due {invoice.dueDate}</span></td>
+                      <td className="px-3 py-3">₱{invoice.amountDue.toLocaleString()}</td>
+                      <td className="px-3 py-3">₱{invoice.verifiedAmount.toLocaleString()}</td>
+                      <td className="px-3 py-3">₱{invoice.pendingAmount.toLocaleString()}</td>
+                      <td className="px-3 py-3 font-semibold">₱{invoice.remainingBalance.toLocaleString()}</td>
+                      <td className="px-3 py-3">
+                        <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${invoice.status === "Paid" ? "bg-emerald-100 text-emerald-800" : invoice.status.includes("review") || invoice.status.includes("submitted") ? "bg-amber-100 text-amber-800" : "bg-red-100 text-red-800"}`}>{invoice.status}</span>
+                      </td>
+                    </tr>
+                  )}
+                />
+              </table>
+            </div>
+          </section>
           <div>
             <h2 className="font-display text-xl font-semibold">Payment Reviews</h2>
             <p className="mt-1 text-sm text-[var(--muted-foreground)]">Review student-submitted payment details and private receipt proofs for your properties.</p>
@@ -1101,7 +1228,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
 
       {listingDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
-          <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="landlord-listing-detail-title">
+          <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="landlord-listing-detail-title">
             <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
               <div>
                 <h3 id="landlord-listing-detail-title" className="font-display text-lg font-semibold">{listingDetail.title}</h3>
@@ -1115,9 +1242,20 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 {listingDetail.images?.filter((image) => typeof image === "string" && !image.startsWith("data:")).length ? (
                   <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                     {listingDetail.images.filter((image) => typeof image === "string" && !image.startsWith("data:")).map((image, index) => (
-                      <a key={`${image}-${index}`} href={image} target="_blank" rel="noreferrer" className="block overflow-hidden rounded-xl border border-[var(--border)]">
-                        <img src={image} alt={`${listingDetail.title} photo ${index + 1}`} className="h-32 w-full object-cover" />
-                      </a>
+                      <div key={`${image}-${index}`} className="group relative overflow-hidden rounded-xl border border-[var(--border)]">
+                        <a href={image} target="_blank" rel="noreferrer" className="block">
+                          <img src={image} alt={`${listingDetail.title} photo ${index + 1}`} className="aspect-[4/3] w-full object-cover" />
+                        </a>
+                        <button
+                          type="button"
+                          onClick={() => removeListingPhoto(index)}
+                          disabled={listingPhotoBusy}
+                          aria-label={`Remove ${listingDetail.title} photo ${index + 1}`}
+                          className="absolute right-2 top-2 inline-flex h-8 w-8 items-center justify-center rounded-full bg-black/75 text-sm font-bold text-white shadow-lg transition hover:bg-red-600 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          ×
+                        </button>
+                      </div>
                     ))}
                   </div>
                 ) : <p className="text-sm text-[var(--muted-foreground)]">No listing photos have been added yet.</p>}
@@ -1156,22 +1294,29 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                   )}
                 </div>
                 <div className="overflow-x-auto rounded-xl border border-[var(--border)]">
-                  <table className="w-full min-w-[42rem] text-sm">
-                    <thead className="bg-[var(--muted)]"><tr>{["Room", "Monthly rent", "Capacity", "Availability", "Photos", "Amenities", "Actions"].map((heading) => <th key={heading} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+                  <table className="w-full min-w-[56rem] table-fixed text-sm">
+                    <thead className="bg-[var(--muted)]"><tr>{["Room", "Monthly rent", "Capacity", "Availability", "Photo", "Amenities", "Actions"].map((heading) => <th key={heading} className="px-3 py-2 text-left text-[10px] font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
                     <PaginatedTableBody
                       rows={listingDetail.rooms}
                       columns={7}
                       resetKey={`${listingDetail.id}|${listingDetail.rooms.length}`}
                       emptyMessage="No rooms have been added to this listing."
                       renderRow={(room) => (
-                        <tr key={room.id}>
-                          <td className="px-3 py-2 font-medium">{room.name}</td>
-                          <td className="px-3 py-2">₱{Number(room.price || 0).toLocaleString()}/mo</td>
-                          <td className="px-3 py-2">{room.capacity ?? "—"}</td>
-                          <td className="px-3 py-2 capitalize">{room.status}</td>
-                          <td className="px-3 py-2">{room.images?.length ? <div className="flex gap-1">{room.images.slice(0, 3).map((image, index) => <img key={`${room.id}-${image}`} src={image} alt={`${room.name} photo ${index + 1}`} className="h-9 w-12 rounded object-cover" />)}</div> : "—"}</td>
-                          <td className="px-3 py-2 text-xs">{room.amenities?.join(", ") || "—"}</td>
-                          <td className="px-3 py-2">
+                        <tr key={room.id} className="align-top">
+                          <td className="break-words px-3 py-3 font-medium">{room.name}</td>
+                          <td className="px-3 py-3">₱{Number(room.price || 0).toLocaleString()}/mo</td>
+                          <td className="px-3 py-3">{room.capacity ?? "—"}</td>
+                          <td className="px-3 py-3 capitalize">{room.status}</td>
+                          <td className="px-3 py-3">
+                            {room.images?.[0] ? (
+                              <div className="flex items-center gap-2">
+                                <img src={room.images[0]} alt={`${room.name} photo 1`} className="aspect-[4/3] w-20 shrink-0 rounded-lg object-cover" />
+                                {room.images.length > 1 && <span className="text-xs text-[var(--muted-foreground)]">+{room.images.length - 1} more</span>}
+                              </div>
+                            ) : "—"}
+                          </td>
+                          <td className="whitespace-normal break-words px-3 py-3 text-xs leading-relaxed">{room.amenities?.join(", ") || "—"}</td>
+                          <td className="px-3 py-3">
                             <button
                               type="button"
                               onClick={() => startRoomEdit(room)}
@@ -1287,7 +1432,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                         <div className="mb-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
                           {roomEditForm.images.map((image, index) => (
                             <div key={`${image}-${index}`} className="relative overflow-hidden rounded-lg border border-[var(--border)]">
-                              <img src={image} alt={`${roomBeingEdited?.name || "Room"} photo ${index + 1}`} className="h-24 w-full object-cover" />
+                              <img src={image} alt={`${roomBeingEdited?.name || "Room"} photo ${index + 1}`} className="aspect-[4/3] w-full object-cover" />
                               <button
                                 type="button"
                                 disabled={roomEditBusy}

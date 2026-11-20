@@ -26,7 +26,7 @@ import { useData } from "../context/DataContext.jsx";
 
 // Reusable Tailwind CSS classes for styling input fields.
 // This keeps all form inputs consistent with UniRent's design.
-const input = "w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm outline-none focus:ring-2 focus:ring-[var(--ring)]";
+const input = "w-full px-3 py-2 rounded-xl border border-[var(--border)] bg-[var(--muted)] text-sm text-[var(--foreground)] outline-none focus:ring-2 focus:ring-[var(--ring)]";
 
 function createRoomDraft(id, roomNumber = `Room ${id}`) {
   return {
@@ -204,6 +204,17 @@ export default function AddListingModal({ onClose, onCreated }) {
     setPropertyPhotoPreviews(previews);
     return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
   }, [propertyPhotoFiles]);
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
 
   function choosePhotos(event, setFiles) {
     const files = Array.from(event.target.files || []);
@@ -360,23 +371,11 @@ export default function AddListingModal({ onClose, onCreated }) {
   }
 
 
-  // Render the Add Listing modal interface.
   return (
-
-    // Full-screen modal overlay.
-    // fixed and inset-0 cover the screen.
-    // z-[1000] places the modal above other interface elements.
-    // The semi-transparent background separates the modal from the page.
     <div className="fixed inset-0 z-[1000] bg-black/50 flex items-center justify-center p-4 overflow-y-auto">
-
-
-      // Main form container.
-      // onSubmit connects the form submission to the submit() function.
-      // max-w-xl limits the form width.
-      // max-h-[90vh] and overflow-y-auto allow scrolling when necessary.
       <form
         onSubmit={submit}
-        className="bg-[var(--card)] border border-[var(--border)] rounded-2xl p-6 w-full max-w-xl space-y-4 max-h-[90vh] overflow-y-auto"
+        className="bg-[var(--card)] border border-[var(--border)] text-[var(--foreground)] rounded-2xl p-6 w-full max-w-4xl space-y-4 max-h-[92vh] overflow-y-auto"
       >
 
 
@@ -442,7 +441,7 @@ export default function AddListingModal({ onClose, onCreated }) {
 
         <div>
           <label className="mb-1.5 block text-sm font-semibold">Property photos <span className="font-normal text-[var(--muted-foreground)]">(optional · up to 8)</span></label>
-          <input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => choosePhotos(event, setPropertyPhotoFiles)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm" />
+          <input type="file" multiple accept="image/jpeg,image/png,image/webp" onChange={(event) => choosePhotos(event, setPropertyPhotoFiles)} className="w-full rounded-xl border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm text-[var(--foreground)]" />
           <p className="mt-1 text-xs text-[var(--muted-foreground)]">JPG, PNG, or WebP · maximum 8 MB each. Photos are uploaded to UniRent storage.</p>
           {propertyPhotoPreviews.length > 0 && (
             <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">

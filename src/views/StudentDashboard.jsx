@@ -207,6 +207,25 @@ export default function StudentDashboard({ onNavigate, onStartChat, onSelectProp
   const stayDecisionBooking = myBookings.find((booking) => booking.id === stayDecisionBookingId);
   const stayRenewalAvailable = stayDecisionBooking && stayDecisionBooking.endDate <= renewalWindowEnd;
   useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key !== "Escape") return;
+      if (!stayDecisionBooking && !bookingDetail) return;
+      event.preventDefault();
+
+      if (stayDecisionBooking) {
+        if (stayActionBusy) return;
+        const promptKey = cyclePromptKey(stayDecisionBooking);
+        setDismissedCyclePromptKeys((keys) => keys.includes(promptKey) ? keys : [...keys, promptKey]);
+        setStayDecisionBookingId(null);
+      } else if (bookingDetail) {
+        setBookingDetail(null);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [stayDecisionBooking, stayActionBusy, bookingDetail]);
+  useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
   useEffect(() => {

@@ -92,6 +92,34 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
   const [auditSeverity, setAuditSeverity] = useState("all");
   const [expandedEntry, setExpandedEntry] = useState(null);
   const [auditDetailModal, setAuditDetailModal] = useState(null);
+  useEffect(() => {
+    function handleKeyDown(event) {
+      if (event.key !== "Escape") return;
+      if (!modalItem && !reviewToRemove && !listingToSuspend && !auditDetailModal && !listingDetail && !verificationDetail && !reviewDetail) return;
+      event.preventDefault();
+
+      if (modalItem) {
+        setModalItem(null);
+        setReason("");
+      } else if (reviewToRemove) {
+        setReviewToRemove(null);
+      } else if (listingToSuspend) {
+        setListingToSuspend(null);
+        setSuspensionReason("");
+      } else if (auditDetailModal) {
+        setAuditDetailModal(null);
+      } else if (listingDetail) {
+        setListingDetail(null);
+      } else if (verificationDetail) {
+        setVerificationDetail(null);
+      } else if (reviewDetail) {
+        setReviewDetail(null);
+      }
+    }
+
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [modalItem, reviewToRemove, listingToSuspend, auditDetailModal, listingDetail, verificationDetail, reviewDetail]);
   const allListings = PROPERTIES;
   const activeAdminName = displayName || "Admin";
   const auditLog = AUDIT_LOG;
@@ -1086,7 +1114,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
       {/* Listing detail and moderation */}
       {listingDetail && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
-          <div className="flex max-h-[92vh] w-full max-w-3xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="listing-detail-title">
+          <div className="flex max-h-[92vh] w-full max-w-4xl flex-col overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="listing-detail-title">
             <div className="flex items-start justify-between gap-4 border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
               <div>
                 <h3 id="listing-detail-title" className="font-display text-lg font-semibold">{listingDetail.title}</h3>

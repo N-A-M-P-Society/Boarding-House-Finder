@@ -505,7 +505,7 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                               aria-label={`Open ${room.name} photo ${index + 1} in photo viewer`}
                               className="overflow-hidden rounded-xl"
                             >
-                              <img src={image} alt={`${room.name}, photo ${index + 1}`} className="h-32 w-full object-cover" loading="lazy" />
+                              <img src={image} alt={`${room.name}, photo ${index + 1}`} className="aspect-[4/3] w-full object-cover" loading="lazy" />
                             </button>
                           ))}
                         </div>

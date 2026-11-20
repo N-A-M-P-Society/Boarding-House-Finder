@@ -954,6 +954,75 @@ export async function fetchPayments() {
   }));
 }
 
+export async function fetchLandlordInvoiceBalances() {
+  const { data, error } = await supabase
+    .from("invoices")
+    .select(`
+      invoice_id,
+      booking_id,
+      student_id,
+      payment_type,
+      period_start,
+      period_end,
+      amount_due,
+      due_date,
+      is_paid,
+      student:students!invoices_student_id_fkey ( full_name ),
+      bookings!invoices_booking_id_fkey (
+        rooms!bookings_room_id_fkey (
+          room_number,
+          boarding_houses!rooms_house_id_fkey ( house_name, landlord_id )
+        )
+      ),
+      invoicePayments:payments!payments_invoice_id_fkey ( amount, verification_status )
+    `)
+    .order("due_date", { ascending: true });
+
+  fail(error);
+
+  return (data || []).map((invoice) => {
+    const due = Number(invoice.amount_due);
+    const payments = invoice.invoicePayments || [];
+    const verifiedAmount = payments
+      .filter((payment) => payment.verification_status === "Verified")
+      .reduce((total, payment) => total + Number(payment.amount), 0);
+    const pendingAmount = payments
+      .filter((payment) => payment.verification_status === "Pending")
+      .reduce((total, payment) => total + Number(payment.amount), 0);
+    const remainingBalance = invoice.is_paid
+      ? 0
+      : Math.max(0, due - verifiedAmount - pendingAmount);
+    const status = remainingBalance === 0
+      ? pendingAmount > 0 ? "Awaiting review" : "Paid"
+      : pendingAmount > 0
+        ? "Partially submitted"
+        : verifiedAmount > 0
+          ? "Partially paid"
+          : "Unpaid";
+    const booking = invoice.bookings;
+    const room = booking?.rooms;
+    const property = room?.boarding_houses;
+
+    return {
+      id: String(invoice.invoice_id),
+      studentId: String(invoice.student_id),
+      studentName: invoice.student?.full_name || "Student",
+      landlordId: String(property?.landlord_id || ""),
+      propertyTitle: property?.house_name || "Property",
+      roomName: room?.room_number || "Room",
+      paymentType: invoice.payment_type,
+      periodStart: invoice.period_start,
+      periodEnd: invoice.period_end,
+      dueDate: invoice.due_date,
+      amountDue: due,
+      verifiedAmount,
+      pendingAmount,
+      remainingBalance,
+      status,
+    };
+  });
+}
+
 /*
   CREATE PAYMENT
 
