@@ -28,6 +28,32 @@ const EMPTY_REVIEW = {
   comment: "",
 };
 
+function ReviewAvatar({ name, src }) {
+  const [failedSrc, setFailedSrc] = useState("");
+  const initials = (name || "Student")
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((part) => part.charAt(0))
+    .join("")
+    .toUpperCase();
+
+  return (
+    <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-[var(--secondary)] text-xs font-semibold text-[var(--primary)]">
+      {src && failedSrc !== src ? (
+        <img
+          src={src}
+          alt=""
+          onError={() => setFailedSrc(src)}
+          className="h-full w-full object-cover"
+        />
+      ) : (
+        <span aria-hidden="true">{initials}</span>
+      )}
+    </div>
+  );
+}
+
 function formatLocalDate(date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -807,7 +833,7 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                     {property.reviews.map((review) => (
                       <div key={review.id} className="border border-[var(--border)] rounded-xl p-4">
                         <div className="flex items-center gap-3 mb-3">
-                          <img src={review.studentAvatar} alt={review.studentName} className="w-9 h-9 rounded-full object-cover" />
+                          <ReviewAvatar name={review.studentName} src={review.studentAvatar} />
                           <div className="flex-1">
                             <div className="flex items-center gap-2">
                               <span className="font-medium text-sm">{review.studentName}</span>

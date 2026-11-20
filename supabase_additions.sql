@@ -295,6 +295,15 @@ CREATE OR REPLACE VIEW public.landlord_public AS
   SELECT landlord_id, account_id, full_name, profile_photo_url FROM public.landlords;
 GRANT SELECT ON public.landlord_public TO anon, authenticated;
 
+CREATE OR REPLACE VIEW public.public_review_profiles AS
+  SELECT r.review_id, s.full_name, s.profile_photo_url
+  FROM public.reviews r
+  JOIN public.students s ON s.student_id = r.student_id
+  JOIN public.boarding_houses h ON h.house_id = r.house_id
+  WHERE r.is_hidden = FALSE AND h.listing_status = 'Published';
+REVOKE ALL ON public.public_review_profiles FROM PUBLIC;
+GRANT SELECT ON public.public_review_profiles TO anon, authenticated;
+
 -- 2. Contacts for direct messages between regular users. SuperAdmin is developer-only.
 CREATE OR REPLACE FUNCTION public.is_chat_eligible_account(p_account_id BIGINT)
 RETURNS BOOLEAN

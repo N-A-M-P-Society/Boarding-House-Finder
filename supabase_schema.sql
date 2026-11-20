@@ -737,6 +737,15 @@ CREATE POLICY student_insert_reviews ON reviews FOR INSERT WITH CHECK (
 CREATE POLICY staff_select_all_reviews ON reviews FOR SELECT USING (is_staff());
 CREATE POLICY staff_moderate_reviews ON reviews FOR UPDATE USING (is_staff());
 
+CREATE OR REPLACE VIEW public.public_review_profiles AS
+SELECT r.review_id, s.full_name, s.profile_photo_url
+FROM public.reviews r
+JOIN public.students s ON s.student_id = r.student_id
+JOIN public.boarding_houses h ON h.house_id = r.house_id
+WHERE r.is_hidden = FALSE AND h.listing_status = 'Published';
+REVOKE ALL ON public.public_review_profiles FROM PUBLIC;
+GRANT SELECT ON public.public_review_profiles TO anon, authenticated;
+
 -- 6.10 Messaging
 REVOKE ALL ON TABLE messages FROM PUBLIC, anon, authenticated;
 GRANT SELECT, INSERT (sender_id, receiver_id, content), UPDATE (is_read)

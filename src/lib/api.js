@@ -407,8 +407,28 @@ export async function fetchHouses(gates) {
     (ll || []).map((l) => [l.landlord_id, l])
   );
 
-  // Convert every database house record into the frontend format.
-  return (data || []).map((h) => mapHouse(h, gates, byId));
+  const reviewIds = Array.from(new Set(
+    (data || []).flatMap((house) => house.reviews || []).map((review) => String(review.review_id))
+  ));
+  const { data: reviewerProfiles, error: reviewerProfilesError } = reviewIds.length
+    ? await supabase
+      .from("public_review_profiles")
+      .select("review_id, full_name, profile_photo_url")
+      .in("review_id", reviewIds)
+    : { data: [], error: null };
+  fail(reviewerProfilesError);
+
+  const reviewerProfilesById = Object.fromEntries(
+    (reviewerProfiles || []).map((profile) => [String(profile.review_id), profile])
+  );
+
+  return (data || []).map((house) => {
+    const reviews = (house.reviews || []).map((review) => ({
+      ...review,
+      students: reviewerProfilesById[String(review.review_id)] || null,
+    }));
+    return mapHouse({ ...house, reviews }, gates, byId);
+  });
 }
 
 /*

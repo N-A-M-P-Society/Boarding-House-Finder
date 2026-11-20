@@ -278,8 +278,8 @@ export function mapReview(r) {
     // Otherwise, display "ADDU Student" as a fallback.
     studentName: r.students?.full_name || "ADDU Student",
 
-    // No student avatar is retrieved here, so use null.
-    studentAvatar: null,
+    // The safe reviewer profile query provides the photo when one is available.
+    studentAvatar: r.students?.profile_photo_url || null,
 
     // Copy the individual review ratings.
     overallRating: r.rating_overall,
@@ -682,6 +682,6 @@ export function mapGate(g) {
 export const HOUSE_SELECT = `
   *,
   rooms ( * ),
-  reviews ( *, students ( full_name ) ),
+  reviews ( * ),
   property_inspections ( * )
 `;
