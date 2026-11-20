@@ -231,7 +231,7 @@ export default function Listings({ onNavigate, onSelectProperty, comparedIds, on
                   onNavigate("detail");
                 }}
                 isSelected={activePin === p.id}
-                onCompare={userRole === "admin" ? undefined : onCompare}
+                onCompare={userRole === "student" ? onCompare : undefined}
                 inComparison={comparedIds.includes(p.id)}
               />
             ))

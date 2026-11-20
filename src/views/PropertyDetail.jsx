@@ -797,7 +797,11 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
 
             <div className="mt-4 pt-4 border-t border-[var(--border)]">
               <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full bg-[var(--primary)] text-white flex items-center justify-center font-bold">{property.landlordName.charAt(0)}</div>
+                <div className="w-10 h-10 shrink-0 overflow-hidden rounded-full bg-[var(--primary)] text-white flex items-center justify-center font-bold">
+                  {property.landlordAvatar
+                    ? <img src={property.landlordAvatar} alt={`${property.landlordName} profile`} className="h-full w-full object-cover" />
+                    : property.landlordName.charAt(0)}
+                </div>
                 <div>
                   <div className="text-xs text-[var(--muted-foreground)]">Managed by</div>
                   <div className="font-medium text-sm">{property.landlordName}</div>

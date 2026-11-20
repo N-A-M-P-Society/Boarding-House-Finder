@@ -172,11 +172,15 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
   const [page, setPage] = useState(session ? (session.role === "student" ? "student-dashboard" : session.role === "landlord" ? "landlord-dashboard" : "admin") : "role-select");
   const [pendingLoginRole, setPendingLoginRole] = useState("student");
   const [selectedPropertyId, setSelectedPropertyId] = useState(null);
-  const [comparedIds, setComparedIds] = useState([]);
+  const [comparedIdsByStudent, setComparedIdsByStudent] = useState({});
   const [chatTarget, setChatTarget] = useState(null);
   const [dashboardInitialTab, setDashboardInitialTab] = useState("overview");
   const [isDark, setIsDark] = useState(false);
   const [themeReady, setThemeReady] = useState(false);
+  const comparisonStudentId = session?.role === "student" && session.studentId != null
+    ? String(session.studentId)
+    : null;
+  const comparedIds = comparisonStudentId ? comparedIdsByStudent[comparisonStudentId] || [] : [];
   const isAuthPage = AUTH_PAGES.includes(page);
   useEffect(() => {
     if (passwordRecovery) setPage("reset-password");
@@ -253,11 +257,31 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
     navigate("role-select");
   }
   function handleCompare(property) {
-    setComparedIds((prev) => {
-      if (prev.includes(property.id)) return prev.filter((id) => id !== property.id);
-      if (prev.length >= 4) return prev;
-      return [...prev, property.id];
+    const propertyId = typeof property === "string" ? property : property?.id;
+    if (!comparisonStudentId || propertyId == null) return;
+    const studentId = comparisonStudentId;
+    setComparedIdsByStudent((previous) => {
+      const current = previous[studentId] || [];
+      const id = String(propertyId);
+      if (current.includes(id)) {
+        return { ...previous, [studentId]: current.filter((comparedId) => comparedId !== id) };
+      }
+      if (current.length >= 4) return previous;
+      return { ...previous, [studentId]: [...current, id] };
     });
+  }
+  function removeComparedListing(propertyId) {
+    if (!comparisonStudentId) return;
+    const studentId = comparisonStudentId;
+    setComparedIdsByStudent((previous) => ({
+      ...previous,
+      [studentId]: (previous[studentId] || []).filter((id) => id !== String(propertyId)),
+    }));
+  }
+  function clearComparedListings() {
+    if (!comparisonStudentId) return;
+    const studentId = comparisonStudentId;
+    setComparedIdsByStudent((previous) => ({ ...previous, [studentId]: [] }));
   }
   const fullHeightPages = ["listings", "chat"];
   const isFullHeight = fullHeightPages.includes(page);
@@ -313,7 +337,7 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
             onNavigate={(p) => navigate(p)}
             onSelectProperty={setSelectedPropertyId}
             comparedIds={comparedIds}
-            onCompare={userRole === "admin" ? undefined : handleCompare}
+            onCompare={userRole === "student" ? handleCompare : undefined}
             userRole={userRole}
             session={session}
           />
@@ -373,11 +397,11 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
             comparedIds={comparedIds}
             onNavigate={(p) => navigate(p)}
             onSelectProperty={setSelectedPropertyId}
-            onRemove={(id) => setComparedIds((prev) => prev.filter((i) => i !== id))}
+            onRemove={removeComparedListing}
           />
         )}
 
-        {userRole !== "admin" && comparedIds.length > 0 && page !== "comparison" && (
+        {userRole === "student" && comparedIds.length > 0 && page !== "comparison" && (
           <div className="fixed bottom-4 left-1/2 z-40 -translate-x-1/2">
             <div className="bg-[var(--foreground)] text-[var(--background)] rounded-2xl px-5 py-3 flex items-center gap-4 shadow-2xl">
               <span className="text-sm font-medium">
@@ -389,7 +413,7 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
               >
                 Compare Now →
               </button>
-              <button onClick={() => setComparedIds([])} className="text-sm opacity-60 hover:opacity-100 transition-opacity">
+              <button onClick={clearComparedListings} className="text-sm opacity-60 hover:opacity-100 transition-opacity">
                 Clear
               </button>
             </div>
