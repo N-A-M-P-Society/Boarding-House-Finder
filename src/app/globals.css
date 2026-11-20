@@ -270,6 +270,24 @@ h1, h2, h3 {
   background: var(--border);
 }
 
+.scrollbar-hidden {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+
+@media (max-width: 640px) {
+  .property-directions-map .leaflet-routing-container {
+    width: min(280px, calc(100vw - 3rem));
+    height: auto;
+    max-height: 15rem;
+    overflow-y: auto;
+  }
+}
+
 @keyframes admin-toast-in {
   from {
     opacity: 0;

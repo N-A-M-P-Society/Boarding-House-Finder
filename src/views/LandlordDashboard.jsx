@@ -39,6 +39,7 @@ function AvailabilityCalendar({ rooms, bookings, onEvent, year }) {
     available: "bg-emerald-100 text-emerald-700",
     reserved: "bg-amber-100 text-amber-700",
     occupied: "bg-red-100 text-red-700",
+    unavailable: "bg-slate-100 text-slate-700",
   };
   function bookingForMonth(roomId, monthIndex) {
     const monthStart = new Date(year, monthIndex, 1);
@@ -76,6 +77,7 @@ function AvailabilityCalendar({ rooms, bookings, onEvent, year }) {
               const status = booking
                 ? booking.status.toLowerCase() === "confirmed" ? "occupied" : "reserved"
                 : room.status;
+              const statusLabel = status === "unavailable" ? "under repair" : status;
               return (
                 <button
                   key={month}
@@ -83,10 +85,10 @@ function AvailabilityCalendar({ rooms, bookings, onEvent, year }) {
                   onClick={() => booking && onEvent(room, status, month, booking)}
                   disabled={!booking}
                   className={`flex h-12 min-w-0 flex-col items-center justify-center rounded-lg border border-[var(--border)] text-[9px] font-semibold uppercase ${booking ? "transition-colors hover:ring-2 hover:ring-[var(--ring)]" : "cursor-default"} ${statusClasses[status] || statusClasses.available}`}
-                  aria-label={`${room.name}, ${month} ${year}: ${status}${booking ? `, booked by ${booking.studentName}` : ""}`}
-                  title={`${month} ${year} · ${status}${booking ? ` · ${booking.studentName}` : ""}`}
+                  aria-label={`${room.name}, ${month} ${year}: ${statusLabel}${booking ? `, booked by ${booking.studentName}` : ""}`}
+                  title={`${month} ${year} · ${statusLabel}${room.unavailableReason ? ` · ${room.unavailableReason}` : ""}${booking ? ` · ${booking.studentName}` : ""}`}
                 >
-                  <span>{status}</span>
+                  <span>{statusLabel}</span>
                   {booking && <span className="block max-w-full truncate px-1 text-[8px] font-medium normal-case">{booking.studentName}</span>}
                 </button>
               );
@@ -413,6 +415,8 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       monthlyRate: String(room.price ?? ""),
       securityDeposit: String(room.securityDeposit ?? 0),
       capacity: String(room.capacity ?? 1),
+      availabilityStatus: room.availabilityStatus || "Available",
+      unavailableReason: room.unavailableReason || "",
       amenities: (room.amenities || []).map((amenity) => amenityValues[amenity] || amenity),
       images: [...(room.images || [])],
     });
@@ -427,6 +431,8 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
       monthlyRate: "",
       securityDeposit: "0",
       capacity: "1",
+      availabilityStatus: "Available",
+      unavailableReason: "",
       amenities: [],
       images: [],
     });
@@ -482,6 +488,10 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
         monthlyRate,
         securityDeposit,
         capacity,
+        availabilityStatus: roomEditForm.availabilityStatus,
+        unavailableReason: roomEditForm.availabilityStatus === "Unavailable"
+          ? roomEditForm.unavailableReason.trim()
+          : "",
         amenities: roomEditForm.amenities,
         images: imageUrls,
       };
@@ -494,6 +504,8 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
           monthly_rate: roomValues.monthlyRate,
           security_deposit: roomValues.securityDeposit,
           capacity: roomValues.capacity,
+          availability_status: roomValues.availabilityStatus,
+          unavailable_reason: roomValues.unavailableReason || null,
           amenities: roomValues.amenities,
           image_urls: imageUrls,
         });
@@ -504,7 +516,9 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
         price: monthlyRate,
         securityDeposit,
         capacity,
-        status: "available",
+        status: roomValues.availabilityStatus.toLowerCase(),
+        availabilityStatus: roomValues.availabilityStatus,
+        unavailableReason: roomValues.unavailableReason,
         amenities: roomEditForm.amenities.map((amenity) => AMENITY_LABELS[amenity] || amenity),
         images: imageUrls,
       };
@@ -916,6 +930,7 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                 ["bg-emerald-100", "Available"],
                 ["bg-amber-100", "Reserved"],
                 ["bg-red-100", "Occupied"],
+                ["bg-slate-100", "Unavailable - Under Repair"],
               ].map(([className, label]) => (
                 <div key={label} className="flex items-center gap-1.5">
                   <span className={`h-3 w-3 rounded ${className}`} />
@@ -1279,6 +1294,12 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                   <span className="rounded-full bg-[var(--muted)] px-3 py-1">Starting rent ₱{Number(listingDetail.monthlyRent).toLocaleString()} / month</span>
                   <span className="rounded-full bg-[var(--muted)] px-3 py-1">Safety {Number(listingDetail.safetyScore).toFixed(1)} / 10</span>
                 </div>
+                {["rejected", "suspended"].includes(listingDetail.status) && listingDetail.rejectionReason && (
+                  <div className="mt-3 rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                    <p className="font-semibold">Moderation reason</p>
+                    <p className="mt-1 whitespace-pre-wrap">{listingDetail.rejectionReason}</p>
+                  </div>
+                )}
               </section>
               <section>
                 <div className="mb-2 flex items-center justify-between gap-3">
@@ -1306,7 +1327,12 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                           <td className="break-words px-3 py-3 font-medium">{room.name}</td>
                           <td className="px-3 py-3">₱{Number(room.price || 0).toLocaleString()}/mo</td>
                           <td className="px-3 py-3">{room.capacity ?? "—"}</td>
-                          <td className="px-3 py-3 capitalize">{room.status}</td>
+                          <td className="px-3 py-3">
+                            <span className="capitalize">{room.status === "unavailable" ? "Unavailable · Under repair" : room.status}</span>
+                            {room.status === "unavailable" && room.unavailableReason && (
+                              <span className="mt-1 block break-words text-xs text-[var(--muted-foreground)]">{room.unavailableReason}</span>
+                            )}
+                          </td>
                           <td className="px-3 py-3">
                             {room.images?.[0] ? (
                               <div className="flex items-center gap-2">
@@ -1400,6 +1426,37 @@ export default function LandlordDashboard({ onNavigate, displayName, session, on
                           className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
                         />
                       </label>
+                      <label className="text-xs font-medium">
+                        Availability status
+                        <select
+                          value={roomEditForm.availabilityStatus}
+                          onChange={(event) => setRoomEditForm((current) => ({
+                            ...current,
+                            availabilityStatus: event.target.value,
+                            unavailableReason: event.target.value === "Unavailable" ? current.unavailableReason : "",
+                          }))}
+                          disabled={roomEditBusy}
+                          className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                        >
+                          <option value="Available">Available</option>
+                          <option value="Reserved">Reserved</option>
+                          <option value="Occupied">Occupied</option>
+                          <option value="Unavailable">Unavailable (Under Repair)</option>
+                        </select>
+                      </label>
+                      {roomEditForm.availabilityStatus === "Unavailable" && (
+                        <label className="text-xs font-medium">
+                          Repair note (optional)
+                          <input
+                            value={roomEditForm.unavailableReason}
+                            onChange={(event) => setRoomEditForm((current) => ({ ...current, unavailableReason: event.target.value }))}
+                            maxLength={120}
+                            placeholder="e.g. Plumbing repair"
+                            disabled={roomEditBusy}
+                            className="mt-1 w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                          />
+                        </label>
+                      )}
                     </div>
                     <div>
                       <p className="mb-2 text-xs font-semibold">Room amenities</p>

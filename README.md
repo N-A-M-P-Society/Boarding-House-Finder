@@ -77,7 +77,7 @@ For a **new development project**, open Supabase → **SQL Editor** and run thes
 2. `supabase_additions.sql` – adds the pieces the app needs on top of the schema:
    - student profile gender and 12-digit ID validation (cleans old IDs and clears duplicates)
    - restricts landlords to seeing their own listings; students and guests still see published listings
-   - `landlord_public` and `message_peers` views (so students can see landlord names without exposing private documents)
+   - `landlord_public` and `message_peers` views (chat directory for students, landlords, and admins; SuperAdmin is excluded)
    - a read policy so safety breakdowns of published houses are public
    - female-only/male-only boarding-house policies and matching browse filters
    - Supabase Storage buckets and policies for public photos and private verification documents
@@ -86,7 +86,8 @@ For a **new development project**, open Supabase → **SQL Editor** and run thes
    - compatibility-quiz roommate matching with same-gender rules, landlord nominations, and student choice
    - shared-booking invitations for matched roommates, next-cycle requests to join a room with one resident, deposit credits, split billing invoices, and balance-limited partial payment RPCs
    - payment rejection reasons, student/landlord payment policies, private receipt access, and Realtime payment updates
-   - persistent landlord verification notifications with per-account inbox access and Realtime updates
+   - persistent per-account inbox notices for verification and moderation decisions, including private reasons for affected landlords and students
+   - role-restricted direct messages between students, landlords, and admins; SuperAdmin accounts are developer-only and excluded from chat
    - a starter ADDU campus gate (**replace with your real gate coordinates**)
    - Realtime enabled for `messages`, `boarding_houses`, `payments`, `bookings`, and `notifications` so conversations, listing scores, payments, bookings, and inbox notices update live
 

@@ -476,6 +476,41 @@ export async function updateHouse(houseId, patch) {
   fail(error);
 }
 
+const BADGE_REVIEW_FIELDS = {
+  badge_fast_wifi: { reasonField: "badge_fast_wifi_reason", label: "WiFi Verified" },
+  badge_24_7_water: { reasonField: "badge_24_7_water_reason", label: "Water 24/7" },
+  badge_vetted_safe: { reasonField: "badge_vetted_safe_reason", label: "Vetted Safe" },
+};
+
+export async function reviewListingBadge({ adminId, houseId, badgeField, enabled, reason = "" }) {
+  const badge = Object.prototype.hasOwnProperty.call(BADGE_REVIEW_FIELDS, badgeField)
+    ? BADGE_REVIEW_FIELDS[badgeField]
+    : null;
+  if (!badge) throw new Error("Choose a valid verification badge.");
+
+  const normalizedReason = reason.trim();
+  if (!enabled && !normalizedReason) {
+    throw new Error("Enter a reason before disabling this badge.");
+  }
+
+  const { error } = await supabase
+    .from("boarding_houses")
+    .update({
+      [badgeField]: Boolean(enabled),
+      [badge.reasonField]: enabled ? null : normalizedReason,
+    })
+    .eq("house_id", Number(houseId));
+
+  fail(error);
+  await writeAudit({
+    adminId,
+    action: enabled ? "ENABLED_LISTING_BADGE" : "DISABLED_LISTING_BADGE",
+    reason: enabled ? `Enabled ${badge.label}.` : `${badge.label}: ${normalizedReason}`,
+    targetTable: "boarding_houses",
+    targetId: houseId,
+  });
+}
+
 /*
   CREATE ROOM
 
@@ -505,6 +540,10 @@ export async function createRooms(houseId, rooms) {
       monthly_rate: room.monthlyRate,
       security_deposit: room.securityDeposit ?? 0,
       capacity: room.capacity ?? 1,
+      availability_status: room.availabilityStatus ?? "Available",
+      unavailable_reason: room.availabilityStatus === "Unavailable"
+        ? room.unavailableReason?.trim() || null
+        : null,
       amenities: room.amenities ?? [],
       image_urls: room.images ?? [],
     })))
@@ -1409,11 +1448,26 @@ export async function fetchAccountNames(accountIds) {
       profilePhotoUrl: r.profile_photo_url,
 
       // Convert the database role into the frontend role format.
-      role: r.role === "Landlord" ? "landlord" : "student"
+      role: r.role.toLowerCase()
     }
   ));
 
   return names;
+}
+
+export async function fetchChatContacts() {
+  const { data, error } = await supabase
+    .from("message_peers")
+    .select("account_id, full_name, role, profile_photo_url")
+    .order("full_name", { ascending: true });
+
+  fail(error);
+  return (data || []).map((contact) => ({
+    accountId: Number(contact.account_id),
+    name: contact.full_name || "User",
+    role: contact.role.toLowerCase(),
+    profilePhotoUrl: contact.profile_photo_url || "",
+  }));
 }
 
 /* ───────────────────────── Admin ───────────────────────── */
@@ -1639,9 +1693,17 @@ export async function setReviewHidden({
   hidden,
   reason
 }) {
+  const normalizedReason = hidden ? reason?.trim() : "";
+  if (hidden && !normalizedReason) {
+    throw new Error("Enter a reason before hiding this review.");
+  }
+
   const { error } = await supabase
     .from("reviews")
-    .update({ is_hidden: hidden })
+    .update({
+      is_hidden: hidden,
+      moderation_reason: hidden ? normalizedReason : null,
+    })
     .eq("review_id", Number(reviewId));
 
   fail(error);
@@ -1722,7 +1784,7 @@ export async function fetchModerationReviews() {
     date: (r.created_at || "").slice(0, 10),
     rating: r.rating_overall || 0,
     comment: r.comment || "",
-    reason: "—",
+    reason: r.moderation_reason || "—",
 
     /*
       The database schema does not contain a separate "flagged" column.

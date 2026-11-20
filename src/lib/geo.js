@@ -77,6 +77,24 @@ export function haversineMeters(lat1, lng1, lat2, lng2) {
   return 2 * R * Math.asin(Math.sqrt(a));
 }
 
+export function nearestCampusGate(lat, lng, gates) {
+  if (lat == null || lng == null) return null;
+
+  const points = gates?.length ? gates : [DEFAULT_CAMPUS];
+  let nearest = points[0];
+  let shortestDistance = haversineMeters(lat, lng, nearest.lat, nearest.lng);
+
+  for (const gate of points.slice(1)) {
+    const distance = haversineMeters(lat, lng, gate.lat, gate.lng);
+    if (distance < shortestDistance) {
+      nearest = gate;
+      shortestDistance = distance;
+    }
+  }
+
+  return nearest;
+}
+
 /*
   NEAREST GATE WALKING DISTANCE
 
@@ -103,34 +121,8 @@ export function nearestGateWalk(lat, lng, gates) {
     };
   }
 
-  /*
-    Determine which locations should be checked.
-
-    If campus gates have already been loaded and the array is not empty,
-    use those actual gate coordinates.
-
-    Otherwise, use DEFAULT_CAMPUS as a fallback location.
-  */
-  const pts = gates?.length ? gates : [DEFAULT_CAMPUS];
-
-  // Start with Infinity so the first calculated distance
-  // will automatically become the shortest distance.
-  let best = Infinity;
-
-  /*
-    Check the distance between the property and every available gate.
-
-    For each gate:
-    1. haversineMeters() calculates the distance.
-    2. Math.min() compares it with the shortest distance found so far.
-    3. best stores the smallest distance.
-  */
-  for (const g of pts) {
-    best = Math.min(
-      best,
-      haversineMeters(lat, lng, g.lat, g.lng)
-    );
-  }
+  const gate = nearestCampusGate(lat, lng, gates);
+  const best = haversineMeters(lat, lng, gate.lat, gate.lng);
 
   /*
     Return the final distance and estimated walking time.

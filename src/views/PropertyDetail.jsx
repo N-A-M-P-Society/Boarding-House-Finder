@@ -3,6 +3,7 @@ import { useData } from "../context/DataContext.jsx";
 import LeafletMap from "../components/LeafletMap.jsx";
 import ImageLightbox from "../components/ImageLightbox.jsx";
 import BookRoomButton from "../components/BookRoomButton.jsx";
+import { nearestCampusGate } from "../lib/geo.js";
 import { fetchMyRoommateMatchRequest, fetchPublicRoomBookings, saveListing } from "../lib/api.js";
 
 const ACTIVE_BOOKING_STATUSES = new Set(["Pending", "Confirmed"]);
@@ -44,7 +45,7 @@ function findBookingConflict(roomId, startDate, endDate, bookings) {
 }
 
 function findShareableBooking(room, bookings) {
-  if (!room || room.capacity !== 2) return null;
+  if (!room || room.status === "unavailable" || room.capacity !== 2) return null;
   return bookings.find((booking) =>
     booking.roomId === String(room.id) &&
     ACTIVE_BOOKING_STATUSES.has(booking.status) &&
@@ -58,7 +59,7 @@ function shareStartDate(booking) {
 }
 
 function findShareableBookingForDate(room, startDate, bookings) {
-  if (!startDate || !room || room.capacity !== 2) return null;
+  if (!startDate || !room || room.status === "unavailable" || room.capacity !== 2) return null;
   return bookings.find((booking) =>
     booking.roomId === String(room.id) &&
     ACTIVE_BOOKING_STATUSES.has(booking.status) &&
@@ -193,14 +194,17 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
 
   const today = formatLocalDate(new Date());
   const selectedRoom = property?.rooms.find((room) => room.id === bookRoom);
+  const directionGate = property?.lat != null && property?.lng != null
+    ? nearestCampusGate(property.lat, property.lng, gates)
+    : null;
   const endDate = startDate ? nextBillingDate(startDate) : "";
   const selectedRoomBookingConflict = findBookingConflict(bookRoom, startDate, endDate, availabilityBookings);
   const selectedShareBooking = findShareableBookingForDate(selectedRoom, startDate, availabilityBookings);
   const selectedRoomConflict = Boolean(selectedRoomBookingConflict && !selectedShareBooking);
   const selectedRoomUnavailable = Boolean(
     selectedRoom &&
-    selectedRoom.status !== "available" &&
-    !selectedShareBooking
+    (selectedRoom.status === "unavailable" ||
+      (selectedRoom.status !== "available" && !selectedShareBooking))
   );
   async function refreshAfterBooking({ isRoommateJoinRequest = false } = {}) {
     setShareWithMatchedRoommate(false);
@@ -352,12 +356,12 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
 
           {/* Tabs */}
           <div>
-            <div className="flex gap-1 border-b border-[var(--border)] mb-6">
+            <div className="scrollbar-hidden flex gap-1 overflow-x-auto overflow-y-hidden border-b border-[var(--border)] mb-6">
               {["overview", "availability", "rooms", "safety", "reviews"].map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`px-4 py-2.5 text-sm font-medium capitalize transition-colors border-b-2 -mb-px ${
+                  className={`shrink-0 whitespace-nowrap px-3 py-2.5 text-sm font-medium capitalize transition-colors border-b-2 -mb-px sm:px-4 ${
                     activeTab === tab
                       ? "border-[var(--primary)] text-[var(--primary)]"
                       : "border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
@@ -404,20 +408,35 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                     ))}
                   </div>
                 </div>
-                <div className="bg-[var(--muted)] rounded-xl p-4 text-sm">
-                  <h3 className="font-semibold mb-2">Walking Route to ADDU Jacinto</h3>
-                  <div className="flex gap-6">
+                <div className="rounded-xl bg-[var(--muted)] p-3 text-sm sm:p-4">
+                  <h3 className="mb-2 text-sm font-semibold leading-snug sm:text-base">Turn-by-turn directions from {directionGate?.name || "ADDU Jacinto"}</h3>
+                  <div className="grid grid-cols-2 gap-3 sm:flex sm:gap-6">
                     <div>
-                      <span className="text-[var(--muted-foreground)]">Distance</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">Walking distance estimate</span>
                       <div className="font-semibold">{property.walkingMeters}m</div>
                     </div>
                     <div>
-                      <span className="text-[var(--muted-foreground)]">Est. time</span>
+                      <span className="text-xs text-[var(--muted-foreground)]">Walking time estimate</span>
                       <div className="font-semibold">{property.walkingMinutes} min</div>
                     </div>
                   </div>
-                  <div className="mt-4 h-64 rounded-xl overflow-hidden border border-[var(--border)] relative">
-                    <LeafletMap properties={[property]} campus={campus} gates={gates} radiusMeters={800} activeId={property.id} />
+                  <p className="mt-2 text-xs leading-relaxed text-[var(--muted-foreground)]">Drag either route marker to adjust the directions.</p>
+                  <div className="property-directions-map relative mt-4 h-[24rem] overflow-hidden rounded-xl border border-[var(--border)] sm:h-96">
+                    <LeafletMap
+                      properties={[property]}
+                      campus={campus}
+                      gates={gates}
+                      radiusMeters={800}
+                      activeId={property.id}
+                      routeCoordinates={
+                        directionGate?.lat != null
+                        && directionGate?.lng != null
+                        && property.lat != null
+                        && property.lng != null
+                          ? [[directionGate.lat, directionGate.lng], [property.lat, property.lng]]
+                          : null
+                      }
+                    />
                   </div>
                 </div>
               </div>
@@ -467,9 +486,14 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
               <div className="space-y-4">
                 {property.rooms.map((room) => {
                   const currentBooking = bookingForDate(room.id, today, availabilityBookings);
-                  const status = currentBooking
+                  const status = room.status === "unavailable"
+                    ? "unavailable"
+                    : currentBooking
                     ? currentBooking.status === "Confirmed" ? "occupied" : "reserved"
                     : room.status;
+                  const statusLabel = status === "unavailable"
+                    ? "Unavailable - Under Repair"
+                    : status.charAt(0).toUpperCase() + status.slice(1);
                   return (
                     <div key={room.id} className="rounded-2xl border border-[var(--border)] bg-[var(--card)] p-4">
                       <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -485,12 +509,17 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                                 : `Reserved from ${currentBooking.startDate} until ${currentBooking.endDate}`}
                             </div>
                           )}
+                          {room.status === "unavailable" && (
+                            <div className="mt-1 text-xs text-amber-800">
+                                {room.unavailableReason ? `Under repair: ${room.unavailableReason}` : "This room is unavailable while repairs are in progress."}
+                            </div>
+                          )}
                         </div>
                         <div className="flex items-center gap-4">
                           <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${
                             status === "available" ? "bg-emerald-100 text-emerald-700" : status === "reserved" ? "bg-amber-100 text-amber-700" : "bg-red-100 text-red-700"
                           }`}>
-                            {status.charAt(0).toUpperCase() + status.slice(1)}
+                            {statusLabel}
                           </span>
                           <span className="font-display font-semibold text-[var(--primary)]">₱{room.price.toLocaleString()}/mo</span>
                         </div>
@@ -662,10 +691,19 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                     {property.rooms.map((room) => {
                       const hasDateConflict = Boolean(findBookingConflict(room.id, startDate, endDate, availabilityBookings));
                       const openSpot = findShareableBooking(room, availabilityBookings);
-                      const unavailable = (room.status !== "available" && !openSpot) || (hasDateConflict && !openSpot);
+                      const unavailable = room.status === "unavailable" || ((room.status !== "available" && !openSpot) || (hasDateConflict && !openSpot));
+                      const roomStateLabel = room.status === "unavailable"
+                        ? ` · unavailable - under repair${room.unavailableReason ? `: ${room.unavailableReason}` : ""}`
+                        : openSpot
+                          ? " · one roommate spot"
+                          : hasDateConflict
+                            ? " · booked for selected dates"
+                            : room.status !== "available"
+                              ? " · unavailable"
+                              : "";
                       return (
                         <option key={room.id} value={room.id} disabled={unavailable}>
-                          {room.name} — ₱{room.price.toLocaleString()}/mo{openSpot ? " · one roommate spot" : hasDateConflict ? " · booked for selected dates" : room.status !== "available" ? " · unavailable" : ""}
+                          {room.name} — ₱{room.price.toLocaleString()}/mo{roomStateLabel}
                         </option>
                       );
                     })}
@@ -769,17 +807,20 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
                       : "Booking request sent. The landlord must confirm it before payment can be submitted."}
                     onBookingCreated={refreshAfterBooking}
                   />
-                  <button
-                    onClick={() => onStartChat({
-                      accountId: property.landlordAccountId,
-                      name: property.landlordName,
-                      propertyTitle: property.title,
-                      profilePhotoUrl: property.landlordAvatar,
-                    })}
-                    className="w-full py-3 border border-[var(--border)] rounded-xl font-semibold text-sm hover:bg-[var(--muted)] transition-colors"
-                  >
-                    💬 Message Landlord
-                  </button>
+                  {session?.dbRole !== "SuperAdmin" && (
+                    <button
+                      onClick={() => onStartChat({
+                        accountId: property.landlordAccountId,
+                        name: property.landlordName,
+                        propertyTitle: property.title,
+                        profilePhotoUrl: property.landlordAvatar,
+                        role: "landlord",
+                      })}
+                      className="w-full py-3 border border-[var(--border)] rounded-xl font-semibold text-sm hover:bg-[var(--muted)] transition-colors"
+                    >
+                      💬 Message Landlord
+                    </button>
+                  )}
                   <button onClick={handleSave} className="w-full py-2 text-sm text-[var(--primary)] hover:underline">♡ Save listing</button>
                   {bookMsg.text && (
                     <p className={`text-xs ${bookMsg.type === "ok" ? "text-emerald-600" : "text-red-600"}`}>{bookMsg.text}</p>

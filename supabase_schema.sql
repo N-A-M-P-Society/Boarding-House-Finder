@@ -63,7 +63,7 @@ DROP TYPE IF EXISTS user_role CASCADE;
 -- ==============================================================================
 CREATE TYPE user_role AS ENUM ('SuperAdmin', 'Admin', 'Landlord', 'Student');
 CREATE TYPE verification_status AS ENUM ('Pending', 'Approved', 'Rejected');
-CREATE TYPE room_status AS ENUM ('Available', 'Reserved', 'Occupied');
+CREATE TYPE room_status AS ENUM ('Available', 'Reserved', 'Occupied', 'Unavailable');
 CREATE TYPE payment_status AS ENUM ('Pending', 'Verified', 'Failed');
 CREATE TYPE booking_status AS ENUM ('Pending', 'Confirmed', 'Cancelled', 'Completed');
 CREATE TYPE listing_status AS ENUM ('Pending', 'Published', 'Suspended', 'Rejected');
@@ -161,7 +161,10 @@ CREATE TABLE boarding_houses (
     safety_score DECIMAL(3, 1),
     badge_fast_wifi BOOLEAN DEFAULT FALSE,
     badge_24_7_water BOOLEAN DEFAULT FALSE,
-    badge_vetted_safe BOOLEAN DEFAULT FALSE
+    badge_vetted_safe BOOLEAN DEFAULT FALSE,
+    badge_fast_wifi_reason TEXT,
+    badge_24_7_water_reason TEXT,
+    badge_vetted_safe_reason TEXT
 );
 
 CREATE TABLE property_inspections (
@@ -184,6 +187,7 @@ CREATE TABLE rooms (
     security_deposit DECIMAL(10, 2) NOT NULL DEFAULT 0.00,
     capacity INT NOT NULL DEFAULT 1,
     availability_status room_status NOT NULL DEFAULT 'Available',
+    unavailable_reason TEXT,
     amenities room_amenity[] NOT NULL DEFAULT '{}',
     image_urls TEXT[] NOT NULL DEFAULT '{}'
 );
@@ -209,6 +213,42 @@ CREATE TABLE bookings (
         daterange(start_date, end_date, '[)') WITH &&
     ) WHERE (status IN ('Pending', 'Confirmed'))
 );
+
+CREATE OR REPLACE FUNCTION prevent_unavailable_room_booking() RETURNS TRIGGER
+LANGUAGE plpgsql SET search_path = public, pg_temp AS $$
+DECLARE
+    booking_changed BOOLEAN;
+BEGIN
+    IF TG_OP = 'INSERT' THEN
+        booking_changed := TRUE;
+    ELSE
+        booking_changed :=
+            OLD.room_id IS DISTINCT FROM NEW.room_id
+            OR OLD.start_date IS DISTINCT FROM NEW.start_date
+            OR OLD.end_date IS DISTINCT FROM NEW.end_date
+            OR OLD.status IS DISTINCT FROM NEW.status
+            OR OLD.roommate_student_id IS DISTINCT FROM NEW.roommate_student_id
+            OR OLD.roommate_invite_status IS DISTINCT FROM NEW.roommate_invite_status;
+    END IF;
+
+    IF booking_changed
+       AND NEW.status IN ('Pending', 'Confirmed')
+       AND EXISTS (
+           SELECT 1
+           FROM rooms r
+           WHERE r.room_id = NEW.room_id
+             AND r.availability_status::TEXT = 'Unavailable'
+       ) THEN
+        RAISE EXCEPTION 'This room is unavailable while repairs are in progress.';
+    END IF;
+
+    RETURN NEW;
+END;
+$$;
+CREATE TRIGGER prevent_unavailable_room_booking
+BEFORE INSERT OR UPDATE OF room_id, start_date, end_date, status, roommate_student_id, roommate_invite_status
+ON bookings
+FOR EACH ROW EXECUTE FUNCTION prevent_unavailable_room_booking();
 
 CREATE OR REPLACE FUNCTION public.get_public_room_bookings(p_house_id BIGINT)
 RETURNS TABLE (room_id BIGINT, start_date DATE, end_date DATE, status TEXT)
@@ -268,6 +308,7 @@ CREATE TABLE reviews (
     comment TEXT,
     is_student_verified BOOLEAN DEFAULT TRUE,
     is_hidden BOOLEAN DEFAULT FALSE,
+    moderation_reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -366,6 +407,17 @@ CREATE OR REPLACE FUNCTION is_staff() RETURNS BOOLEAN
 LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public AS $$
   SELECT COALESCE(auth_user_role() IN ('Admin', 'SuperAdmin'), FALSE);
 $$;
+
+CREATE OR REPLACE FUNCTION public.is_chat_eligible_account(p_account_id BIGINT) RETURNS BOOLEAN
+LANGUAGE sql SECURITY DEFINER STABLE SET search_path = public, pg_temp AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.accounts
+    WHERE account_id = p_account_id
+      AND role IN ('Admin', 'Landlord', 'Student')
+  );
+$$;
+REVOKE ALL ON FUNCTION public.is_chat_eligible_account(BIGINT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.is_chat_eligible_account(BIGINT) TO authenticated;
 
 -- Now that the helper exists, give verifications an automatic owner
 ALTER TABLE property_verifications ALTER COLUMN landlord_id SET DEFAULT auth_landlord_id();
@@ -483,7 +535,10 @@ BEGIN
         OR NEW.safety_score       IS DISTINCT FROM OLD.safety_score
         OR NEW.badge_fast_wifi    IS DISTINCT FROM OLD.badge_fast_wifi
         OR NEW.badge_24_7_water   IS DISTINCT FROM OLD.badge_24_7_water
-        OR NEW.badge_vetted_safe  IS DISTINCT FROM OLD.badge_vetted_safe THEN
+        OR NEW.badge_vetted_safe  IS DISTINCT FROM OLD.badge_vetted_safe
+        OR NEW.badge_fast_wifi_reason   IS DISTINCT FROM OLD.badge_fast_wifi_reason
+        OR NEW.badge_24_7_water_reason  IS DISTINCT FROM OLD.badge_24_7_water_reason
+        OR NEW.badge_vetted_safe_reason IS DISTINCT FROM OLD.badge_vetted_safe_reason THEN
             RAISE EXCEPTION 'Only admins can change listing status, scores, or badges.';
         END IF;
     END IF;
@@ -621,7 +676,7 @@ CREATE POLICY landlord_select_verifications ON property_verifications FOR SELECT
 
 -- 6.5 Rooms
 CREATE POLICY landlord_select_rooms ON rooms FOR SELECT USING (house_id IN (SELECT my_house_ids()));
-CREATE POLICY landlord_insert_rooms ON rooms FOR INSERT WITH CHECK (house_id IN (SELECT my_house_ids()) AND availability_status = 'Available');
+CREATE POLICY landlord_insert_rooms ON rooms FOR INSERT WITH CHECK (house_id IN (SELECT my_house_ids()) AND availability_status IN ('Available', 'Unavailable'));
 CREATE POLICY landlord_update_rooms ON rooms FOR UPDATE USING (house_id IN (SELECT my_house_ids())) WITH CHECK (house_id IN (SELECT my_house_ids()));
 CREATE POLICY student_select_rooms ON rooms FOR SELECT USING (house_id IN (SELECT house_id FROM boarding_houses WHERE listing_status = 'Published'));
 
@@ -683,9 +738,48 @@ CREATE POLICY staff_select_all_reviews ON reviews FOR SELECT USING (is_staff());
 CREATE POLICY staff_moderate_reviews ON reviews FOR UPDATE USING (is_staff());
 
 -- 6.10 Messaging
-CREATE POLICY users_select_messages ON messages FOR SELECT USING (sender_id = auth_account_id() OR receiver_id = auth_account_id());
-CREATE POLICY users_insert_messages ON messages FOR INSERT WITH CHECK (sender_id = auth_account_id());
-CREATE POLICY users_update_messages ON messages FOR UPDATE USING (receiver_id = auth_account_id()) WITH CHECK (receiver_id = auth_account_id());
+REVOKE ALL ON TABLE messages FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT (sender_id, receiver_id, content), UPDATE (is_read)
+ON TABLE messages TO authenticated;
+CREATE POLICY users_select_messages ON messages FOR SELECT USING (
+    auth_user_role() IN ('Admin', 'Landlord', 'Student')
+    AND (sender_id = auth_account_id() OR receiver_id = auth_account_id())
+    AND is_chat_eligible_account(sender_id)
+    AND is_chat_eligible_account(receiver_id)
+);
+CREATE POLICY users_insert_messages ON messages FOR INSERT WITH CHECK (
+    auth_user_role() IN ('Admin', 'Landlord', 'Student')
+    AND sender_id = auth_account_id()
+    AND is_chat_eligible_account(sender_id)
+    AND is_chat_eligible_account(receiver_id)
+);
+CREATE POLICY users_update_messages ON messages FOR UPDATE
+USING (
+    auth_user_role() IN ('Admin', 'Landlord', 'Student')
+    AND receiver_id = auth_account_id()
+    AND is_chat_eligible_account(sender_id)
+    AND is_chat_eligible_account(receiver_id)
+)
+WITH CHECK (
+    auth_user_role() IN ('Admin', 'Landlord', 'Student')
+    AND receiver_id = auth_account_id()
+    AND is_chat_eligible_account(sender_id)
+    AND is_chat_eligible_account(receiver_id)
+);
+
+CREATE OR REPLACE VIEW public.message_peers AS
+SELECT
+    a.account_id,
+    a.role::TEXT AS role,
+    COALESCE(l.full_name, s.full_name, NULLIF(split_part(a.email, '@', 1), '')) AS full_name,
+    COALESCE(l.profile_photo_url, s.profile_photo_url, a.profile_photo_url) AS profile_photo_url
+FROM public.accounts a
+LEFT JOIN public.landlords l ON l.account_id = a.account_id
+LEFT JOIN public.students s ON s.account_id = a.account_id
+WHERE a.role IN ('Admin', 'Landlord', 'Student')
+  AND auth_user_role() IN ('Admin', 'Landlord', 'Student')
+  AND a.account_id <> auth_account_id();
+GRANT SELECT ON public.message_peers TO authenticated;
 
 -- 6.11 Settings & audit
 CREATE POLICY everyone_read_settings ON system_settings FOR SELECT USING (true);

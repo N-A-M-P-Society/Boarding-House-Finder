@@ -12,6 +12,7 @@ import {
   recordInspection,
   updateHouse,
   updateAccountProfile,
+  reviewListingBadge,
 } from "../lib/api.js";
 import ProfilePhotoUpload from "../components/ProfilePhotoUpload.jsx";
 import PaginatedTableBody from "../components/PaginatedTableBody.jsx";
@@ -75,6 +76,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
   const [suspensionReason, setSuspensionReason] = useState("");
   const [reviews, setReviews] = useState([]);
   const [reviewToRemove, setReviewToRemove] = useState(null);
+  const [reviewModerationReason, setReviewModerationReason] = useState("");
   const [verificationDetail, setVerificationDetail] = useState(null);
   const [listingDetail, setListingDetail] = useState(null);
   const [reviewDetail, setReviewDetail] = useState(null);
@@ -85,6 +87,11 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
   const [reviewSearch, setReviewSearch] = useState("");
   const [reviewStatusFilter, setReviewStatusFilter] = useState("all");
   const [badgeSearch, setBadgeSearch] = useState("");
+  const [badgeStatusFilter, setBadgeStatusFilter] = useState("all");
+  const [badgeTypeFilter, setBadgeTypeFilter] = useState("all");
+  const [badgeReview, setBadgeReview] = useState(null);
+  const [badgeReviewEnabled, setBadgeReviewEnabled] = useState(false);
+  const [badgeReviewReason, setBadgeReviewReason] = useState("");
   const [toast, setToast] = useState(null);
   // Audit log state
   const [auditSearch, setAuditSearch] = useState("");
@@ -95,7 +102,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
   useEffect(() => {
     function handleKeyDown(event) {
       if (event.key !== "Escape") return;
-      if (!modalItem && !reviewToRemove && !listingToSuspend && !auditDetailModal && !listingDetail && !verificationDetail && !reviewDetail) return;
+      if (!modalItem && !reviewToRemove && !listingToSuspend && !auditDetailModal && !listingDetail && !verificationDetail && !reviewDetail && !badgeReview) return;
       event.preventDefault();
 
       if (modalItem) {
@@ -103,6 +110,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
         setReason("");
       } else if (reviewToRemove) {
         setReviewToRemove(null);
+        setReviewModerationReason("");
       } else if (listingToSuspend) {
         setListingToSuspend(null);
         setSuspensionReason("");
@@ -114,12 +122,15 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
         setVerificationDetail(null);
       } else if (reviewDetail) {
         setReviewDetail(null);
+      } else if (badgeReview) {
+        setBadgeReview(null);
+        setBadgeReviewReason("");
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [modalItem, reviewToRemove, listingToSuspend, auditDetailModal, listingDetail, verificationDetail, reviewDetail]);
+  }, [modalItem, reviewToRemove, listingToSuspend, auditDetailModal, listingDetail, verificationDetail, reviewDetail, badgeReview]);
   const allListings = PROPERTIES;
   const activeAdminName = displayName || "Admin";
   const auditLog = AUDIT_LOG;
@@ -160,8 +171,12 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
     ].map(([column, label]) => ({ listing, column, label, verified: listing.badges.includes(label) })),
   ).filter(({ listing, label }) => {
     const query = badgeSearch.trim().toLowerCase();
-    return !query || listing.title.toLowerCase().includes(query) ||
+    const matchesSearch = !query || listing.title.toLowerCase().includes(query) ||
       listing.landlordName.toLowerCase().includes(query) || label.toLowerCase().includes(query);
+    const verified = listing.badges.includes(label);
+    return matchesSearch
+      && (badgeStatusFilter === "all" || (badgeStatusFilter === "enabled" ? verified : !verified))
+      && (badgeTypeFilter === "all" || badgeTypeFilter === label);
   });
   const filteredAuditLog = useMemo(() => {
     return auditLog.filter((e) => {
@@ -196,22 +211,57 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
     setListingToSuspend(null);
     setSuspensionReason("");
   }
-  function updateReviewStatus(id, status) {
+  function updateReviewStatus(id, status, reasonText = "") {
+    const moderationReason = status === "hidden" ? reasonText.trim() : "Restored by moderator";
+    if (status === "hidden" && !moderationReason) {
+      showToast("Reason required", "Enter a reason before hiding this review.");
+      return;
+    }
     run(
-      () => setReviewHidden({ adminId, reviewId: id, hidden: status !== "flagged", reason: status === "hidden" ? "Hidden by moderator" : "Restored by moderator" }),
+      () => setReviewHidden({ adminId, reviewId: id, hidden: status === "hidden", reason: moderationReason }),
       "Review updated",
       `Review is now ${status}.`,
     );
   }
+  function openBadgeReview(item) {
+    setBadgeReview(item);
+    setBadgeReviewEnabled(item.verified);
+    setBadgeReviewReason("");
+  }
+  function saveBadgeReview() {
+    if (!badgeReview || (!badgeReviewEnabled && !badgeReviewReason.trim())) return;
+    const { listing, column, label } = badgeReview;
+    const enabled = badgeReviewEnabled;
+    const reasonText = badgeReviewReason.trim();
+    run(
+      () => reviewListingBadge({
+        adminId,
+        houseId: listing.id,
+        badgeField: column,
+        enabled,
+        reason: reasonText,
+      }),
+      "Badge review saved",
+      `${label} ${enabled ? "enabled" : "disabled"} for ${listing.title}.`,
+    );
+    setBadgeReview(null);
+    setBadgeReviewReason("");
+  }
   function removeReview() {
     if (!reviewToRemove) return;
     const r = reviewToRemove;
+    const moderationReason = reviewModerationReason.trim();
+    if (!moderationReason) {
+      showToast("Reason required", "Enter a reason before removing this review.");
+      return;
+    }
     run(
-      () => setReviewHidden({ adminId, reviewId: r.id, hidden: true, reason: "Removed by moderator" }),
+      () => setReviewHidden({ adminId, reviewId: r.id, hidden: true, reason: moderationReason }),
       "Review removed",
       `${r.studentName}'s review is hidden from the public page.`,
     );
     setReviewToRemove(null);
+    setReviewModerationReason("");
   }
   // Weighted 0-10 safety score from the latest inspection inputs and the saved weights
   function computeScore({ police, lighting, gated, active, required }, scoreWeights = weights) {
@@ -725,7 +775,7 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
                     <td className="px-4 py-3 text-amber-600">{"★".repeat(Math.max(0, Math.min(5, review.rating)))} <span className="text-[var(--foreground)]">{Number(review.rating).toFixed(1)}/5</span></td>
                     <td className="px-4 py-3 text-xs text-[var(--muted-foreground)]">{review.date || "—"}</td>
                     <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${review.status === "hidden" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>{review.status === "hidden" ? "Hidden" : "Visible"}</span></td>
-                    <td className="px-4 py-3"><button type="button" onClick={() => setReviewDetail(review)} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Open review</button></td>
+                    <td className="px-4 py-3"><button type="button" onClick={() => { setReviewModerationReason(""); setReviewDetail(review); }} className="rounded-lg bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">Open review</button></td>
                   </tr>
                 )}
               />
@@ -739,16 +789,29 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
         <div className="space-y-4">
           <div>
             <h2 className="font-display text-xl font-semibold">Badge Verification</h2>
-            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Manage which verification badges are shown on listings. The current schema stores badge state only; it does not store supporting evidence or review history.</p>
+            <p className="mt-1 text-sm text-[var(--muted-foreground)]">Review each listing badge and record a reason when disabling it. Landlords receive moderation details in their inbox.</p>
           </div>
-          <input type="search" value={badgeSearch} onChange={(event) => setBadgeSearch(event.target.value)} placeholder="Search listing, landlord, badge" aria-label="Search badge records" className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm sm:max-w-sm" />
+          <div className="grid gap-3 sm:grid-cols-[minmax(14rem,1fr)_12rem_12rem]">
+            <input type="search" value={badgeSearch} onChange={(event) => setBadgeSearch(event.target.value)} placeholder="Search listing, landlord, badge" aria-label="Search badge records" className="w-full rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm" />
+            <select value={badgeStatusFilter} onChange={(event) => setBadgeStatusFilter(event.target.value)} aria-label="Filter badges by status" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+              <option value="all">All statuses</option>
+              <option value="enabled">Enabled</option>
+              <option value="disabled">Not enabled</option>
+            </select>
+            <select value={badgeTypeFilter} onChange={(event) => setBadgeTypeFilter(event.target.value)} aria-label="Filter by badge type" className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm">
+              <option value="all">All badge types</option>
+              <option value="WiFi Verified">WiFi Verified</option>
+              <option value="Water 24/7">Water 24/7</option>
+              <option value="Vetted Safe">Vetted Safe</option>
+            </select>
+          </div>
           <div className="overflow-x-auto rounded-2xl border border-[var(--border)] bg-[var(--card)]">
             <table className="w-full min-w-[42rem] text-sm">
-              <thead className="bg-[var(--muted)]"><tr>{["Listing", "Landlord", "Badge", "Status", "Action"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
+              <thead className="bg-[var(--muted)]"><tr>{["Listing", "Landlord", "Badge", "Status", "Review"].map((heading) => <th key={heading} className="px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-[var(--muted-foreground)]">{heading}</th>)}</tr></thead>
               <PaginatedTableBody
                 rows={badgeRows}
                 columns={5}
-                resetKey={badgeSearch}
+                resetKey={`${badgeSearch}:${badgeStatusFilter}:${badgeTypeFilter}`}
                 emptyMessage="No badge records match your search."
                 renderRow={({ listing, column, label, verified }) => (
                   <tr key={`${listing.id}-${column}`} className="hover:bg-[var(--muted)]">
@@ -757,8 +820,8 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
                     <td className="px-4 py-3">{label}</td>
                     <td className="px-4 py-3"><span className={`rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${verified ? "bg-emerald-50 text-emerald-700" : "bg-[var(--muted)] text-[var(--muted-foreground)]"}`}>{verified ? "Enabled" : "Not enabled"}</span></td>
                     <td className="px-4 py-3">
-                      <button type="button" onClick={() => run(() => updateHouse(Number(listing.id), { [column]: !verified }), "Badge updated", `${label} ${verified ? "removed from" : "granted to"} ${listing.title}.`)} className={`rounded-lg border px-3 py-1.5 text-xs font-semibold ${verified ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"}`}>
-                        {verified ? "Disable" : "Enable"}
+                      <button type="button" onClick={() => openBadgeReview({ listing, column, label, verified })} className="rounded-lg border border-[var(--primary)]/30 bg-[var(--secondary)] px-3 py-1.5 text-xs font-semibold text-[var(--primary)]">
+                        Review
                       </button>
                     </td>
                   </tr>
@@ -1240,17 +1303,83 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
                 <span className={`ml-auto rounded-full px-2 py-1 text-[10px] font-semibold uppercase ${reviewDetail.status === "hidden" ? "bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>{reviewDetail.status === "hidden" ? "Hidden" : "Visible"}</span>
               </div>
               <blockquote className="whitespace-pre-wrap rounded-xl border border-[var(--border)] bg-[var(--muted)] p-4 text-sm leading-relaxed">{reviewDetail.comment || "No written comment was submitted."}</blockquote>
-              <p className="text-xs text-[var(--muted-foreground)]">Moderation actions are recorded in the audit log. Removing a review hides it from public display; it is not deleted.</p>
+              {reviewDetail.status === "hidden" ? (
+                <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+                  <p className="font-semibold">Reason sent to the student</p>
+                  <p className="mt-1 whitespace-pre-wrap">{reviewDetail.reason !== "—" ? reviewDetail.reason : "No reason was recorded."}</p>
+                </div>
+              ) : (
+                <label className="block text-xs font-medium">
+                  Reason shown to the student
+                  <textarea
+                    value={reviewModerationReason}
+                    onChange={(event) => setReviewModerationReason(event.target.value)}
+                    maxLength={500}
+                    placeholder="Describe the policy violation or issue…"
+                    className="mt-1.5 h-24 w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3 text-sm font-normal"
+                  />
+                </label>
+              )}
+              <p className="text-xs text-[var(--muted-foreground)]">Moderation actions are recorded in the audit log. Hiding keeps the review available to administrators but removes it from public display.</p>
             </div>
             <div className="flex flex-wrap justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
-              <button type="button" onClick={() => setReviewDetail(null)} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
+              <button type="button" onClick={() => { setReviewDetail(null); setReviewModerationReason(""); }} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Close</button>
               {reviewDetail.status === "hidden"
-                ? <button type="button" onClick={() => { updateReviewStatus(reviewDetail.id, "flagged"); setReviewDetail(null); }} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white">Restore review</button>
+                ? <button type="button" onClick={() => { updateReviewStatus(reviewDetail.id, "visible"); setReviewDetail(null); }} className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white">Restore review</button>
                 : <>
-                    <button type="button" onClick={() => { updateReviewStatus(reviewDetail.id, "hidden"); setReviewDetail(null); }} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Hide review</button>
-                    <button type="button" onClick={() => { setReviewToRemove(reviewDetail); setReviewDetail(null); }} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white">Remove review</button>
+                    <button type="button" disabled={!reviewModerationReason.trim()} onClick={() => { updateReviewStatus(reviewDetail.id, "hidden", reviewModerationReason); setReviewDetail(null); setReviewModerationReason(""); }} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold disabled:cursor-not-allowed disabled:opacity-50">Hide review</button>
+                    <button type="button" disabled={!reviewModerationReason.trim()} onClick={() => { setReviewToRemove(reviewDetail); setReviewDetail(null); }} className="rounded-xl bg-red-600 px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50">Remove review</button>
                   </>
               }
+            </div>
+          </div>
+        </div>
+      )}
+
+      {badgeReview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4 backdrop-blur-sm" role="presentation">
+          <div className="w-full max-w-lg overflow-hidden rounded-2xl border border-[var(--border)] bg-[var(--card)] shadow-2xl" role="dialog" aria-modal="true" aria-labelledby="badge-review-title">
+            <div className="border-b border-[var(--border)] bg-[var(--muted)] px-5 py-4">
+              <h3 id="badge-review-title" className="font-display text-lg font-semibold">Review verification badge</h3>
+              <p className="mt-1 text-xs text-[var(--muted-foreground)]">{badgeReview.listing.title} · {badgeReview.label}</p>
+            </div>
+            <div className="space-y-4 p-5">
+              <label className="block text-xs font-medium">
+                Review decision
+                <select
+                  value={badgeReviewEnabled ? "enabled" : "disabled"}
+                  onChange={(event) => setBadgeReviewEnabled(event.target.value === "enabled")}
+                  className="mt-1.5 w-full rounded-xl border border-[var(--border)] bg-[var(--background)] px-3 py-2 text-sm"
+                >
+                  <option value="enabled">Enable badge</option>
+                  <option value="disabled">Disable badge</option>
+                </select>
+              </label>
+              {!badgeReviewEnabled && (
+                <label className="block text-xs font-medium">
+                  Reason shown to the landlord
+                  <textarea
+                    value={badgeReviewReason}
+                    onChange={(event) => setBadgeReviewReason(event.target.value)}
+                    maxLength={500}
+                    placeholder="Explain what evidence is missing or what needs correction…"
+                    className="mt-1.5 h-24 w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3 text-sm font-normal"
+                    autoFocus
+                  />
+                </label>
+              )}
+              <p className="text-xs text-[var(--muted-foreground)]">The landlord will receive this decision and reason in their inbox. The action is also recorded in the admin audit log.</p>
+            </div>
+            <div className="flex justify-end gap-2 border-t border-[var(--border)] bg-[var(--muted)] px-5 py-3">
+              <button type="button" onClick={() => { setBadgeReview(null); setBadgeReviewReason(""); }} className="rounded-xl border border-[var(--border)] px-4 py-2 text-xs font-semibold">Cancel</button>
+              <button
+                type="button"
+                onClick={saveBadgeReview}
+                disabled={!badgeReviewEnabled && !badgeReviewReason.trim()}
+                className="rounded-xl bg-[var(--primary)] px-4 py-2 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-50"
+              >
+                Save review
+              </button>
             </div>
           </div>
         </div>
@@ -1317,16 +1446,26 @@ export default function AdminConsole({ displayName, session, onProfilePhotoChang
             <p className="text-xs text-[var(--muted-foreground)] mt-1 mb-4">
               Are you sure you want to remove this review? This action hides it from the public property page; the record remains available to administrators.
             </p>
+            <label className="mb-4 block text-xs font-medium">
+              Reason shown to the student
+              <textarea
+                value={reviewModerationReason}
+                onChange={(event) => setReviewModerationReason(event.target.value)}
+                maxLength={500}
+                className="mt-1.5 h-24 w-full resize-y rounded-xl border border-[var(--border)] bg-[var(--muted)] p-3 text-sm font-normal"
+              />
+            </label>
             <div className="flex gap-2">
               <button
-                onClick={() => setReviewToRemove(null)}
+                onClick={() => { setReviewToRemove(null); setReviewModerationReason(""); }}
                 className="flex-1 py-2.5 border border-[var(--border)] rounded-xl text-sm font-medium hover:bg-[var(--muted)] transition-colors"
               >
                 Cancel
               </button>
               <button
                 onClick={removeReview}
-                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold transition-colors"
+                disabled={!reviewModerationReason.trim()}
+                className="flex-1 py-2.5 bg-red-600 hover:bg-red-700 text-white rounded-xl text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-50"
               >
                 Remove Review
               </button>

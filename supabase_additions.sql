@@ -2,6 +2,92 @@
 -- UniRent: additions to run AFTER supabase_schema.sql (safe to re-run)
 -- ==============================================================================
 
+ALTER TYPE public.room_status ADD VALUE IF NOT EXISTS 'Unavailable';
+ALTER TABLE public.rooms ADD COLUMN IF NOT EXISTS unavailable_reason TEXT;
+ALTER TABLE public.boarding_houses
+  ADD COLUMN IF NOT EXISTS badge_fast_wifi_reason TEXT,
+  ADD COLUMN IF NOT EXISTS badge_24_7_water_reason TEXT,
+  ADD COLUMN IF NOT EXISTS badge_vetted_safe_reason TEXT;
+ALTER TABLE public.reviews ADD COLUMN IF NOT EXISTS moderation_reason TEXT;
+
+CREATE OR REPLACE FUNCTION public.protect_house_admin_fields()
+RETURNS TRIGGER
+SECURITY DEFINER
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+BEGIN
+  IF auth.uid() IS NOT NULL AND NOT public.is_staff() THEN
+    IF NEW.landlord_id IS DISTINCT FROM OLD.landlord_id
+      OR NEW.listing_status IS DISTINCT FROM OLD.listing_status
+      OR NEW.rejection_reason IS DISTINCT FROM OLD.rejection_reason
+      OR NEW.safety_score IS DISTINCT FROM OLD.safety_score
+      OR NEW.badge_fast_wifi IS DISTINCT FROM OLD.badge_fast_wifi
+      OR NEW.badge_24_7_water IS DISTINCT FROM OLD.badge_24_7_water
+      OR NEW.badge_vetted_safe IS DISTINCT FROM OLD.badge_vetted_safe
+      OR NEW.badge_fast_wifi_reason IS DISTINCT FROM OLD.badge_fast_wifi_reason
+      OR NEW.badge_24_7_water_reason IS DISTINCT FROM OLD.badge_24_7_water_reason
+      OR NEW.badge_vetted_safe_reason IS DISTINCT FROM OLD.badge_vetted_safe_reason THEN
+      RAISE EXCEPTION 'Only admins can change listing status, scores, or badges.';
+    END IF;
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+DROP POLICY IF EXISTS landlord_insert_rooms ON public.rooms;
+CREATE POLICY landlord_insert_rooms ON public.rooms FOR INSERT
+WITH CHECK (
+  house_id IN (SELECT my_house_ids())
+  AND availability_status::TEXT IN ('Available', 'Unavailable')
+);
+
+DROP POLICY IF EXISTS landlord_update_rooms ON public.rooms;
+CREATE POLICY landlord_update_rooms ON public.rooms FOR UPDATE
+USING (house_id IN (SELECT my_house_ids()))
+WITH CHECK (house_id IN (SELECT my_house_ids()));
+
+CREATE OR REPLACE FUNCTION public.prevent_unavailable_room_booking()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  booking_changed BOOLEAN;
+BEGIN
+  IF TG_OP = 'INSERT' THEN
+    booking_changed := TRUE;
+  ELSE
+    booking_changed :=
+      OLD.room_id IS DISTINCT FROM NEW.room_id
+      OR OLD.start_date IS DISTINCT FROM NEW.start_date
+      OR OLD.end_date IS DISTINCT FROM NEW.end_date
+      OR OLD.status IS DISTINCT FROM NEW.status
+      OR OLD.roommate_student_id IS DISTINCT FROM NEW.roommate_student_id
+      OR OLD.roommate_invite_status IS DISTINCT FROM NEW.roommate_invite_status;
+  END IF;
+
+  IF booking_changed
+     AND NEW.status IN ('Pending', 'Confirmed')
+     AND EXISTS (
+       SELECT 1
+       FROM public.rooms r
+       WHERE r.room_id = NEW.room_id
+         AND r.availability_status::TEXT = 'Unavailable'
+     ) THEN
+    RAISE EXCEPTION 'This room is unavailable while repairs are in progress.';
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS prevent_unavailable_room_booking ON public.bookings;
+CREATE TRIGGER prevent_unavailable_room_booking
+BEFORE INSERT OR UPDATE OF room_id, start_date, end_date, status, roommate_student_id, roommate_invite_status
+ON public.bookings
+FOR EACH ROW EXECUTE FUNCTION public.prevent_unavailable_room_booking();
+
 -- Student profile requirements: optional gender and a unique 12-digit student ID.
 ALTER TABLE public.students ADD COLUMN IF NOT EXISTS gender TEXT;
 ALTER TABLE public.students DROP CONSTRAINT IF EXISTS students_gender_check;
@@ -209,22 +295,82 @@ CREATE OR REPLACE VIEW public.landlord_public AS
   SELECT landlord_id, account_id, full_name, profile_photo_url FROM public.landlords;
 GRANT SELECT ON public.landlord_public TO anon, authenticated;
 
--- 2. Names of the people I exchange messages with (students <-> landlords)
+-- 2. Contacts for direct messages between regular users. SuperAdmin is developer-only.
+CREATE OR REPLACE FUNCTION public.is_chat_eligible_account(p_account_id BIGINT)
+RETURNS BOOLEAN
+LANGUAGE sql
+SECURITY DEFINER
+STABLE
+SET search_path = public, pg_temp
+AS $$
+  SELECT EXISTS (
+    SELECT 1 FROM public.accounts
+    WHERE account_id = p_account_id
+      AND role IN ('Admin', 'Landlord', 'Student')
+  );
+$$;
+REVOKE ALL ON FUNCTION public.is_chat_eligible_account(BIGINT) FROM PUBLIC, anon;
+GRANT EXECUTE ON FUNCTION public.is_chat_eligible_account(BIGINT) TO authenticated;
+
 CREATE OR REPLACE VIEW public.message_peers AS
   SELECT
     a.account_id,
     a.role::text AS role,
-    COALESCE(l.full_name, s.full_name) AS full_name,
-    COALESCE(l.profile_photo_url, s.profile_photo_url) AS profile_photo_url
+    COALESCE(l.full_name, s.full_name, NULLIF(split_part(a.email, '@', 1), '')) AS full_name,
+    COALESCE(l.profile_photo_url, s.profile_photo_url, a.profile_photo_url) AS profile_photo_url
   FROM public.accounts a
   LEFT JOIN public.landlords l ON l.account_id = a.account_id
   LEFT JOIN public.students  s ON s.account_id = a.account_id
-  WHERE a.account_id IN (
-    SELECT sender_id   FROM public.messages WHERE receiver_id = public.auth_account_id()
-    UNION
-    SELECT receiver_id FROM public.messages WHERE sender_id   = public.auth_account_id()
-  );
+  WHERE a.role IN ('Admin', 'Landlord', 'Student')
+    AND public.auth_user_role() IN ('Admin', 'Landlord', 'Student')
+    AND a.account_id <> public.auth_account_id();
 GRANT SELECT ON public.message_peers TO authenticated;
+
+ALTER TABLE public.messages ENABLE ROW LEVEL SECURITY;
+REVOKE ALL ON TABLE public.messages FROM PUBLIC, anon, authenticated;
+GRANT SELECT, INSERT (sender_id, receiver_id, content), UPDATE (is_read)
+ON TABLE public.messages TO authenticated;
+
+DO $$
+DECLARE
+  v_policy RECORD;
+BEGIN
+  FOR v_policy IN
+    SELECT policyname
+    FROM pg_policies
+    WHERE schemaname = 'public' AND tablename = 'messages'
+  LOOP
+    EXECUTE format('DROP POLICY %I ON public.messages', v_policy.policyname);
+  END LOOP;
+END $$;
+
+CREATE POLICY users_select_messages ON public.messages FOR SELECT TO authenticated USING (
+  public.auth_user_role() IN ('Admin', 'Landlord', 'Student')
+  AND (sender_id = public.auth_account_id() OR receiver_id = public.auth_account_id())
+  AND public.is_chat_eligible_account(sender_id)
+  AND public.is_chat_eligible_account(receiver_id)
+);
+
+CREATE POLICY users_insert_messages ON public.messages FOR INSERT TO authenticated WITH CHECK (
+  public.auth_user_role() IN ('Admin', 'Landlord', 'Student')
+  AND sender_id = public.auth_account_id()
+  AND public.is_chat_eligible_account(sender_id)
+  AND public.is_chat_eligible_account(receiver_id)
+);
+
+CREATE POLICY users_update_messages ON public.messages FOR UPDATE TO authenticated
+USING (
+  public.auth_user_role() IN ('Admin', 'Landlord', 'Student')
+  AND receiver_id = public.auth_account_id()
+  AND public.is_chat_eligible_account(sender_id)
+  AND public.is_chat_eligible_account(receiver_id)
+)
+WITH CHECK (
+  public.auth_user_role() IN ('Admin', 'Landlord', 'Student')
+  AND receiver_id = public.auth_account_id()
+  AND public.is_chat_eligible_account(sender_id)
+  AND public.is_chat_eligible_account(receiver_id)
+);
 
 -- 3. Let everyone see inspection results of PUBLISHED houses (powers the safety breakdown)
 DROP POLICY IF EXISTS public_select_published_inspections ON public.property_inspections;
@@ -2401,6 +2547,187 @@ CREATE TRIGGER notify_landlord_verification_status_change
   AFTER UPDATE OF verification_status ON public.property_verifications
   FOR EACH ROW
   EXECUTE FUNCTION public.notify_landlord_verification_status_change();
+
+CREATE OR REPLACE FUNCTION public.notify_house_moderation_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_account_id BIGINT;
+  v_title TEXT;
+  v_message TEXT;
+BEGIN
+  IF NEW.listing_status IS NOT DISTINCT FROM OLD.listing_status
+     AND NEW.rejection_reason IS NOT DISTINCT FROM OLD.rejection_reason THEN
+    RETURN NEW;
+  END IF;
+
+  SELECT landlord.account_id
+  INTO v_account_id
+  FROM public.landlords AS landlord
+  WHERE landlord.landlord_id = NEW.landlord_id;
+
+  IF v_account_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  IF NEW.listing_status::TEXT IN ('Rejected', 'Suspended') THEN
+    IF NULLIF(BTRIM(NEW.rejection_reason), '') IS NULL THEN
+      RAISE EXCEPTION 'A reason is required when rejecting or suspending a listing.';
+    END IF;
+    v_title := CASE NEW.listing_status::TEXT
+      WHEN 'Rejected' THEN 'Listing rejected'
+      ELSE 'Listing suspended'
+    END;
+    v_message := format(
+      'Your listing "%s" was %s. Reason: %s',
+      NEW.house_name,
+      lower(NEW.listing_status::TEXT),
+      BTRIM(NEW.rejection_reason)
+    );
+  ELSIF OLD.listing_status::TEXT IN ('Rejected', 'Suspended')
+        AND NEW.listing_status::TEXT = 'Published' THEN
+    v_title := 'Listing restored';
+    v_message := format('Your listing "%s" is visible to students again.', NEW.house_name);
+  ELSE
+    RETURN NEW;
+  END IF;
+
+  INSERT INTO public.notifications (account_id, notification_type, title, body, is_read, created_at)
+  VALUES (v_account_id, 'listing_moderation', v_title, v_message, FALSE, NOW());
+
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.notify_house_moderation_change() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS notify_house_moderation_change ON public.boarding_houses;
+CREATE TRIGGER notify_house_moderation_change
+  AFTER UPDATE OF listing_status, rejection_reason ON public.boarding_houses
+  FOR EACH ROW
+  EXECUTE FUNCTION public.notify_house_moderation_change();
+
+CREATE OR REPLACE FUNCTION public.notify_badge_moderation_change()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_account_id BIGINT;
+  v_badge RECORD;
+  v_title TEXT;
+  v_message TEXT;
+BEGIN
+  SELECT landlord.account_id
+  INTO v_account_id
+  FROM public.landlords AS landlord
+  WHERE landlord.landlord_id = NEW.landlord_id;
+
+  IF v_account_id IS NULL THEN
+    RETURN NEW;
+  END IF;
+
+  FOR v_badge IN
+    SELECT * FROM (VALUES
+      ('badge_fast_wifi', 'WiFi Verified', OLD.badge_fast_wifi, NEW.badge_fast_wifi, OLD.badge_fast_wifi_reason, NEW.badge_fast_wifi_reason),
+      ('badge_24_7_water', 'Water 24/7', OLD.badge_24_7_water, NEW.badge_24_7_water, OLD.badge_24_7_water_reason, NEW.badge_24_7_water_reason),
+      ('badge_vetted_safe', 'Vetted Safe', OLD.badge_vetted_safe, NEW.badge_vetted_safe, OLD.badge_vetted_safe_reason, NEW.badge_vetted_safe_reason)
+    ) AS badge(badge_key, badge_label, was_enabled, is_enabled, old_reason, reason)
+  LOOP
+    IF v_badge.was_enabled IS DISTINCT FROM v_badge.is_enabled
+       OR (v_badge.is_enabled IS FALSE AND v_badge.old_reason IS DISTINCT FROM v_badge.reason) THEN
+      IF NOT v_badge.is_enabled AND NULLIF(BTRIM(v_badge.reason), '') IS NULL THEN
+        RAISE EXCEPTION 'A reason is required when disabling a verification badge.';
+      END IF;
+
+      IF v_badge.is_enabled THEN
+        v_title := 'Verification badge enabled';
+        v_message := format('The "%s" badge was enabled for "%s".', v_badge.badge_label, NEW.house_name);
+      ELSE
+        v_title := 'Verification badge disabled';
+        v_message := format(
+          'The "%s" badge was disabled for "%s". Reason: %s',
+          v_badge.badge_label,
+          NEW.house_name,
+          BTRIM(v_badge.reason)
+        );
+      END IF;
+
+      INSERT INTO public.notifications (account_id, notification_type, title, body, is_read, created_at)
+      VALUES (v_account_id, 'badge_moderation', v_title, v_message, FALSE, NOW());
+    END IF;
+  END LOOP;
+
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.notify_badge_moderation_change() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS notify_badge_moderation_change ON public.boarding_houses;
+CREATE TRIGGER notify_badge_moderation_change
+  AFTER UPDATE OF
+    badge_fast_wifi, badge_24_7_water, badge_vetted_safe,
+    badge_fast_wifi_reason, badge_24_7_water_reason, badge_vetted_safe_reason
+  ON public.boarding_houses
+  FOR EACH ROW
+  EXECUTE FUNCTION public.notify_badge_moderation_change();
+
+CREATE OR REPLACE FUNCTION public.notify_student_review_moderation()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = public, pg_temp
+AS $$
+DECLARE
+  v_account_id BIGINT;
+  v_house_name TEXT;
+BEGIN
+  IF NEW.is_hidden IS NOT TRUE THEN
+    RETURN NEW;
+  END IF;
+  IF NEW.is_hidden IS NOT DISTINCT FROM OLD.is_hidden
+     AND NEW.moderation_reason IS NOT DISTINCT FROM OLD.moderation_reason THEN
+    RETURN NEW;
+  END IF;
+  IF NULLIF(BTRIM(NEW.moderation_reason), '') IS NULL THEN
+    RAISE EXCEPTION 'A reason is required when hiding a student review.';
+  END IF;
+
+  SELECT student.account_id, house.house_name
+  INTO v_account_id, v_house_name
+  FROM public.students AS student
+  JOIN public.boarding_houses AS house ON house.house_id = NEW.house_id
+  WHERE student.student_id = NEW.student_id;
+
+  IF v_account_id IS NOT NULL THEN
+    INSERT INTO public.notifications (account_id, notification_type, title, body, is_read, created_at)
+    VALUES (
+      v_account_id,
+      'review_moderation',
+      'Your review was hidden',
+      format(
+        'Your review for "%s" was hidden by a moderator. Reason: %s',
+        COALESCE(v_house_name, 'a listing'),
+        BTRIM(NEW.moderation_reason)
+      ),
+      FALSE,
+      NOW()
+    );
+  END IF;
+
+  RETURN NEW;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.notify_student_review_moderation() FROM PUBLIC, anon, authenticated;
+
+DROP TRIGGER IF EXISTS notify_student_review_moderation ON public.reviews;
+CREATE TRIGGER notify_student_review_moderation
+  AFTER UPDATE OF is_hidden, moderation_reason ON public.reviews
+  FOR EACH ROW
+  EXECUTE FUNCTION public.notify_student_review_moderation();
 
 ALTER TABLE public.notifications REPLICA IDENTITY FULL;
 DO $$

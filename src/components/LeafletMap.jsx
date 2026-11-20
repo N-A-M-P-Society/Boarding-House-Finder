@@ -8,12 +8,14 @@ import { useEffect, useRef } from "react";
 
 // Import Leaflet's CSS so the map, markers, popups, and controls display correctly.
 import "leaflet/dist/leaflet.css";
+import "leaflet-routing-machine/dist/leaflet-routing-machine.css";
 
 // Choose a marker color based on the property's safety score.
 // 8.5 and above = green (higher safety score).
 // 7 and above = orange (moderate safety score).
 // Below 7 = red (lower safety score).
 const safetyColor = (s) => (s >= 8.5 ? "#10b981" : s >= 7 ? "#f59e0b" : "#ef4444");
+const ADDU_CAMPUS_PIN = { lat: 7.07218, lng: 125.61340 };
 
 // Escape special HTML characters to prevent unsafe text from being inserted into
 // the HTML used by Leaflet popups, tooltips, and custom markers.
@@ -39,7 +41,9 @@ const esc = (s) =>
  * PROPS:
  * properties      - Array containing rental property information.
  * gates           - Array containing campus gate coordinates and names.
+ * campus          - Optional campus coordinate object; defaults to ADDU Jacinto.
  * radiusMeters    - Radius of the circle around campus, in meters.
+ * routeCoordinates - Optional [[startLat, startLng], [endLat, endLng]] route.
  * activeId        - ID of the currently selected property.
  * onSelect(id)    - Callback called when a property marker is clicked.
  * onViewDetails(id) - Callback called when the popup's View Details button is clicked.
@@ -52,6 +56,8 @@ const esc = (s) =>
 export default function LeafletMap({
   properties = [],
   gates = [],
+  campus = null,
+  routeCoordinates = null,
   radiusMeters = 800,
   activeId = null,
   onSelect,
@@ -71,6 +77,8 @@ export default function LeafletMap({
 
   // Stores the Leaflet layer group containing the map's markers and circles.
   const layerRef = useRef(null);
+  const routingControlRef = useRef(null);
+  const routingCoordinatesKeyRef = useRef("");
   const radiusFitRef = useRef({ enabled: false, radius: null });
   const hasInitialFitRef = useRef(false);
 
@@ -83,11 +91,12 @@ export default function LeafletMap({
   const cbRef = useRef({});
   cbRef.current = { onSelect, onViewDetails, onLocationSelect };
 
-  // FIXED campus coordinates for ADDU.
-  // These coordinates are used as the center of the map and walking-radius circle.
-  // External props do not change these values.
-  const campusLat = 7.07218;
-  const campusLng = 125.61340;
+  const campusLat = campus?.lat != null && Number.isFinite(Number(campus.lat))
+    ? Number(campus.lat)
+    : ADDU_CAMPUS_PIN.lat;
+  const campusLng = campus?.lng != null && Number.isFinite(Number(campus.lng))
+    ? Number(campus.lng)
+    : ADDU_CAMPUS_PIN.lng;
 
   // CREATE THE MAP
   // This effect runs once when the component is first mounted.
@@ -104,6 +113,7 @@ export default function LeafletMap({
       // This is necessary because Leaflet accesses the browser's window object,
       // which is not available during server-side rendering.
       const L = (await import("leaflet")).default;
+      await import("leaflet-routing-machine");
 
       // Stop if:
       // 1. The component has already been unmounted.
@@ -180,6 +190,11 @@ export default function LeafletMap({
 
       // Remove the Leaflet map and its event listeners.
       // This prevents duplicate maps and memory leaks.
+      if (routingControlRef.current && mapRef.current) {
+        mapRef.current.removeControl(routingControlRef.current);
+      }
+      routingControlRef.current = null;
+      routingCoordinatesKeyRef.current = "";
       mapRef.current?.remove();
 
       // Clear the stored map reference.
@@ -206,6 +221,57 @@ export default function LeafletMap({
     // Remove all existing markers and circles from the layer.
     // They will be recreated using the latest properties and gate data.
     layer.clearLayers();
+
+    const validRouteCoordinates =
+      Array.isArray(routeCoordinates)
+      && routeCoordinates.length === 2
+      && routeCoordinates.every((coordinate) =>
+        Array.isArray(coordinate)
+        && coordinate.length === 2
+        && Number.isFinite(coordinate[0])
+        && Number.isFinite(coordinate[1])
+        && Math.abs(coordinate[0]) <= 90
+        && Math.abs(coordinate[1]) <= 180
+      )
+      ? routeCoordinates
+      : null;
+    const routeKey = validRouteCoordinates ? JSON.stringify(validRouteCoordinates) : "";
+
+    if (routingControlRef.current && routingCoordinatesKeyRef.current !== routeKey) {
+      map.removeControl(routingControlRef.current);
+      routingControlRef.current = null;
+      routingCoordinatesKeyRef.current = "";
+    }
+
+    if (validRouteCoordinates && !routingControlRef.current) {
+      const waypoints = validRouteCoordinates.map(([lat, lng]) => L.latLng(lat, lng));
+      const plan = L.Routing.plan(waypoints, {
+        draggableWaypoints: true,
+        addWaypoints: false,
+        createMarker: (index, waypoint) => {
+          const label = index === 0 ? "A" : "B";
+          const color = index === 0 ? "#0B5E6F" : "#2563eb";
+          const icon = L.divIcon({
+            className: "",
+            html: `<div style="width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;background:${color};border:3px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.35);color:#fff;font:700 12px sans-serif">${label}</div>`,
+            iconSize: [30, 30],
+            iconAnchor: [15, 15],
+          });
+          return L.marker(waypoint.latLng, { draggable: true, icon });
+        },
+      });
+      const routingControl = L.Routing.control({
+        plan,
+        routeWhileDragging: false,
+        fitSelectedRoutes: true,
+        lineOptions: {
+          styles: [{ color: "#2563eb", opacity: 0.9, weight: 6 }],
+        },
+      }).addTo(map);
+
+      routingControlRef.current = routingControl;
+      routingCoordinatesKeyRef.current = routeKey;
+    }
 
     // WALKING RADIUS AROUND CAMPUS
     // Draw a circle around the ADDU campus to show the selected radius.
@@ -238,7 +304,8 @@ export default function LeafletMap({
     // Place the campus marker on the map.
     // A higher zIndexOffset makes it appear above other markers.
     // A tooltip displays "ADDU Campus" when the user hovers over it.
-    L.marker([campusLat, campusLng], {
+    // Keep the ADDU pin at its original location, independent of gate-based routing.
+    L.marker([ADDU_CAMPUS_PIN.lat, ADDU_CAMPUS_PIN.lng], {
       icon: campusIcon,
       zIndexOffset: 500
     })
@@ -374,7 +441,7 @@ export default function LeafletMap({
     draw();
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [properties, campusLat, campusLng, gates, radiusMeters, activeId, fitRadius, singleZoom]);
+  }, [properties, campusLat, campusLng, gates, radiusMeters, activeId, fitRadius, singleZoom, routeCoordinates]);
 
   // MAP CONTAINER
   // This div is where Leaflet renders the interactive map.

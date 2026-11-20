@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { supabase } from "../lib/supabase.js";
-import { fetchMessages, sendMessage as sendMessageRow, markRead, fetchAccountNames, loadProfile } from "../lib/api.js";
+import { fetchMessages, sendMessage as sendMessageRow, markRead, fetchAccountNames, fetchChatContacts, loadProfile } from "../lib/api.js";
 const avatarFor = (name) =>
   "data:image/svg+xml;utf8," +
   encodeURIComponent(
@@ -31,9 +31,24 @@ const QUICK_REPLIES_ROOMMATE = [
   "Could we discuss our move-in plans?",
   "Would you like to compare roommate preferences?",
 ];
+const QUICK_REPLIES_ADMIN = [
+  "How can I help you?",
+  "Please share more details so I can assist.",
+  "I will review this and follow up with you.",
+];
+const QUICK_REPLIES_SUPPORT = [
+  "I need help with my account.",
+  "I have a question about a listing.",
+  "Can you help me with this issue?",
+];
 export default function Chat({ userRole, session, chatTarget, onChatTargetHandled, onMessagesRead }) {
   const [rows, setRows] = useState([]);
   const [names, setNames] = useState({});
+  const [contacts, setContacts] = useState([]);
+  const [contactsLoaded, setContactsLoaded] = useState(false);
+  const [contactsLoading, setContactsLoading] = useState(false);
+  const [contactsOpen, setContactsOpen] = useState(false);
+  const [contactSearch, setContactSearch] = useState("");
   const [myProfilePhotoUrl, setMyProfilePhotoUrl] = useState(
     session?.student?.profile_photo_url || session?.landlord?.profile_photo_url || session?.profile_photo_url || ""
   );
@@ -45,6 +60,8 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
   const messagesEndRef = useRef(null);
   const myAccountId = session?.accountId;
   const isLandlord = userRole === "landlord";
+  const isAdmin = userRole === "admin";
+  const myRole = userRole;
 
   const load = useCallback(async () => {
     if (!myAccountId) return;
@@ -53,6 +70,7 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
       setRows(data);
       const peerIds = Array.from(new Set(data.map((m) => (m.sender_id === myAccountId ? m.receiver_id : m.sender_id))));
       setNames(await fetchAccountNames(peerIds));
+      setError("");
     } catch (e) {
       setError(e.message);
     }
@@ -117,6 +135,38 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
     }
   }, [chatTarget]);
 
+  async function toggleContactPicker() {
+    const shouldOpen = !contactsOpen;
+    setContactsOpen(shouldOpen);
+    if (!shouldOpen || contactsLoaded || contactsLoading) return;
+
+    setContactsLoading(true);
+    setError("");
+    try {
+      setContacts(await fetchChatContacts());
+      setContactsLoaded(true);
+    } catch (loadError) {
+      setError(loadError.message);
+    } finally {
+      setContactsLoading(false);
+    }
+  }
+
+  function startConversation(contact) {
+    setExtraPeers((current) => ({
+      ...current,
+      [contact.accountId]: {
+        name: contact.name,
+        profilePhotoUrl: contact.profilePhotoUrl,
+        role: contact.role,
+        propertyTitle: "Direct message",
+      },
+    }));
+    setActiveConvId(String(contact.accountId));
+    setContactsOpen(false);
+    setContactSearch("");
+  }
+
   // Build conversations in the shape the UI expects
   const peerIds = new Set([...rows.map((m) => (m.sender_id === myAccountId ? m.receiver_id : m.sender_id)), ...Object.keys(extraPeers).map(Number)]);
   const conversations = Array.from(peerIds).map((peerId) => {
@@ -134,7 +184,7 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
           senderId: m.sender_id,
           senderName: mine ? "You" : peerName,
           senderAvatar: mine ? myAvatar : peerAvatar,
-          senderRole: mine ? (isLandlord ? "landlord" : "student") : peerRole,
+          senderRole: mine ? myRole : peerRole,
           content: m.content,
           createdAt: fmtTime(m.created_at),
           read: m.is_read,
@@ -180,29 +230,28 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
   if (!session) {
     return <div className="flex h-full items-center justify-center text-sm text-[var(--muted-foreground)]">Sign in to view your messages.</div>;
   }
-  if (!activeConv) {
-    return (
-      <div className="flex h-full items-center justify-center text-center p-8">
-        <div>
-          <div className="text-3xl mb-3">💬</div>
-          <p className="text-sm font-medium">No conversations yet</p>
-          <p className="text-xs text-[var(--muted-foreground)] mt-1">{error || "Open a property or roommate request and tap Message to start a conversation."}</p>
-        </div>
-      </div>
-    );
+  if (session?.dbRole === "SuperAdmin" || userRole === "superadmin") {
+    return <div className="flex h-full items-center justify-center text-sm text-[var(--muted-foreground)]">Messaging is not available for developer accounts.</div>;
   }
-  const myRole = isLandlord ? "landlord" : "student";
   const myId = myAccountId;
-  const otherName = activeConv.peerName;
-  const otherAvatar = activeConv.peerAvatar;
-  const otherRole = activeConv.peerRole;
-  const quickReplies = isLandlord ? QUICK_REPLIES_LANDLORD : otherRole === "student" ? QUICK_REPLIES_ROOMMATE : QUICK_REPLIES_STUDENT;
+  const otherName = activeConv?.peerName || "";
+  const otherAvatar = activeConv?.peerAvatar || "";
+  const otherRole = activeConv?.peerRole || "";
+  const quickReplies = otherRole === "admin"
+    ? isAdmin ? QUICK_REPLIES_ADMIN : QUICK_REPLIES_SUPPORT
+    : isLandlord
+      ? QUICK_REPLIES_LANDLORD
+      : otherRole === "student"
+        ? QUICK_REPLIES_ROOMMATE
+        : QUICK_REPLIES_STUDENT;
   async function sendMessage(content) {
-    if (!content.trim()) return;
-    setInput("");
+    const message = content.trim();
+    if (!message || !activeConv) return;
     try {
-      const row = await sendMessageRow(myAccountId, Number(activeConv.id), content.trim());
+      const row = await sendMessageRow(myAccountId, Number(activeConv.id), message);
       setRows((prev) => (prev.some((x) => x.message_id === row.message_id) ? prev : [...prev, row]));
+      setInput((current) => current.trim() === message ? "" : current);
+      setError("");
     } catch (e) {
       setError(e.message);
     }
@@ -212,11 +261,20 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
       c.peerName.toLowerCase().includes(search.toLowerCase()) ||
       c.propertyTitle.toLowerCase().includes(search.toLowerCase()),
   );
+  const filteredContacts = contacts.filter((contact) =>
+    `${contact.name} ${contact.role}`.toLowerCase().includes(contactSearch.trim().toLowerCase())
+  );
   function rolePill(role) {
     if (role === "landlord")
       return (
         <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-[var(--primary)]/10 text-[var(--primary)] border border-[var(--primary)]/20">
           🏠 Landlord
+        </span>
+      );
+    if (role === "admin")
+      return (
+        <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-indigo-50 text-indigo-700 border border-indigo-200">
+          ⚙️ Admin
         </span>
       );
     return (
@@ -230,10 +288,19 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
       {/* ── Sidebar ── */}
       <aside className="w-72 xl:w-80 flex-shrink-0 border-r border-[var(--border)] bg-[var(--card)] flex flex-col">
         <div className="p-4 border-b border-[var(--border)]">
-          <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center justify-between gap-2 mb-3">
             <h2 className="font-display font-semibold text-lg">Messages</h2>
-            {/* Role badge for the logged-in user */}
-            {rolePill(myRole)}
+            <div className="flex items-center gap-2">
+              {rolePill(myRole)}
+              <button
+                type="button"
+                onClick={toggleContactPicker}
+                aria-expanded={contactsOpen}
+                className="rounded-lg bg-[var(--primary)] px-2.5 py-1.5 text-xs font-semibold text-white hover:opacity-90"
+              >
+                + New
+              </button>
+            </div>
           </div>
           <input
             type="text"
@@ -244,23 +311,61 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
           />
         </div>
 
+        {contactsOpen && (
+          <div className="max-h-72 overflow-y-auto border-b border-[var(--border)] bg-[var(--background)] p-3">
+            <input
+              type="search"
+              value={contactSearch}
+              onChange={(event) => setContactSearch(event.target.value)}
+              placeholder="Find a student, landlord, or admin…"
+              aria-label="Search users to message"
+              className="mb-2 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-xs"
+            />
+            {contactsLoading ? (
+              <p role="status" className="py-3 text-center text-xs text-[var(--muted-foreground)]">Loading contacts…</p>
+            ) : filteredContacts.length ? (
+              <ul className="space-y-1">
+                {filteredContacts.map((contact) => (
+                  <li key={contact.accountId}>
+                    <button
+                      type="button"
+                      onClick={() => startConversation(contact)}
+                      className="flex w-full items-center gap-2 rounded-lg p-2 text-left hover:bg-[var(--muted)]"
+                    >
+                      <img
+                        src={contact.profilePhotoUrl || avatarFor(contact.name)}
+                        alt=""
+                        className="h-8 w-8 rounded-full object-cover"
+                      />
+                      <span className="min-w-0 flex-1 truncate text-xs font-medium">{contact.name}</span>
+                      {rolePill(contact.role)}
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="py-3 text-center text-xs text-[var(--muted-foreground)]">
+                {error || (contacts.length ? "No users match your search." : "No other chat-enabled accounts are available.")}
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="flex-1 overflow-y-auto divide-y divide-[var(--border)]/60">
           {filteredConvs.map((conv) => {
             const displayName = conv.peerName;
             const displayAvatar = conv.peerAvatar;
             const displayRole = conv.peerRole;
             const unread = conv.unreadCount;
-            const isActive = conv.id === activeConv.id;
+            const isActive = conv.id === activeConv?.id;
             return (
               <button
                 key={conv.id}
                 onClick={() => setActiveConvId(conv.id)}
                 className={`w-full flex items-start gap-3 px-4 py-3.5 hover:bg-[var(--muted)] transition-colors text-left ${isActive ? "bg-[var(--secondary)]" : ""}`}
               >
-                {/* Avatar + online dot */}
-                <div className="relative flex-shrink-0">
+                <div className="flex-shrink-0">
                   <img src={displayAvatar} alt={displayName} className="w-10 h-10 rounded-full object-cover" />
-                  <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[var(--card)]" />
                 </div>
 
                 <div className="flex-1 min-w-0">
@@ -288,65 +393,43 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
 
       {/* ── Chat area ── */}
       <div className="flex-1 flex flex-col min-w-0">
+        {activeConv ? (
+          <>
         {/* Header */}
         <div className="border-b border-[var(--border)] bg-[var(--card)] px-5 py-3 flex items-center gap-3">
           {/* Other party info */}
-          <div className="relative flex-shrink-0">
+          <div className="flex-shrink-0">
             <img src={otherAvatar} alt={otherName} className="w-10 h-10 rounded-full object-cover" />
-            <span className="absolute bottom-0 right-0 w-2.5 h-2.5 rounded-full bg-emerald-500 border-2 border-[var(--card)]" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <span className="font-semibold text-sm">{otherName}</span>
               {rolePill(otherRole)}
             </div>
-            <p className="text-xs text-[var(--muted-foreground)] truncate mt-0.5">Online · Re: {activeConv.propertyTitle}</p>
+            <p className="text-xs text-[var(--muted-foreground)] truncate mt-0.5">{activeConv.propertyTitle}</p>
           </div>
 
-          {/* Property context card */}
-          <div className="hidden lg:flex items-center gap-3 px-3 py-2 bg-[var(--muted)] rounded-xl border border-[var(--border)] flex-shrink-0 max-w-xs">
-            <img src={activeConv.propertyImage} alt="" className="w-10 h-10 rounded-lg object-cover flex-shrink-0" />
-            <div className="min-w-0">
-              <p className="text-xs font-semibold truncate">{activeConv.propertyTitle}</p>
-              <p className="text-[10px] text-[var(--muted-foreground)] truncate">{activeConv.propertyAddress}</p>
-            </div>
-          </div>
         </div>
 
         {/* Role-context banner */}
         <div
           className={`px-5 py-2 text-xs font-medium flex items-center gap-2 border-b border-[var(--border)] ${
-            isLandlord ? "bg-[var(--primary)]/5 text-[var(--primary)]" : "bg-amber-50 text-amber-800 border-amber-100"
+            isLandlord ? "bg-[var(--primary)]/5 text-[var(--primary)]" : isAdmin ? "bg-indigo-50 text-indigo-800 border-indigo-100" : "bg-amber-50 text-amber-800 border-amber-100"
           }`}
         >
-          {isLandlord ? (
-            <>
-              🏠{" "}
-              <span>
-                You are the <strong>landlord</strong> — responding to a student's inquiry about your property.
-              </span>
-            </>
-          ) : (
-            <>
-              🎓{" "}
-              <span>
-                {otherRole === "student"
-                  ? <>You are a <strong>student</strong> — messaging another student about their roommate request.</>
-                  : <>You are a <strong>student</strong> — inquiring about a rental listing from the landlord.</>}
-              </span>
-            </>
-          )}
+          {isLandlord ? "🏠" : isAdmin ? "⚙️" : "🎓"}{" "}
+          <span>
+            You are a <strong>{myRole}</strong> — messaging a <strong>{otherRole}</strong>.
+          </span>
         </div>
+
+        {error && <p role="alert" className="border-b border-red-200 bg-red-50 px-5 py-2 text-xs text-red-700">{error}</p>}
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-5 py-5 space-y-5 bg-[var(--background)]">
-          {/* Date divider */}
-          <div className="flex items-center gap-3">
-            <div className="flex-1 h-px bg-[var(--border)]" />
-            <span className="text-xs text-[var(--muted-foreground)] font-medium px-2">Today</span>
-            <div className="flex-1 h-px bg-[var(--border)]" />
-          </div>
-
+          {activeConv.messages.length === 0 && (
+            <p className="py-10 text-center text-sm text-[var(--muted-foreground)]">No messages yet. Send a message to start this conversation.</p>
+          )}
           {activeConv.messages.map((msg) => {
             const isMe = msg.senderId === myId;
             return (
@@ -356,10 +439,14 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
                   <img src={msg.senderAvatar} alt={msg.senderName} className="w-8 h-8 rounded-full object-cover" />
                   <span
                     className={`text-[9px] font-bold px-1 rounded ${
-                      msg.senderRole === "landlord" ? "text-[var(--primary)] bg-[var(--secondary)]" : "text-amber-700 bg-amber-50"
+                      msg.senderRole === "landlord"
+                        ? "text-[var(--primary)] bg-[var(--secondary)]"
+                        : msg.senderRole === "admin"
+                          ? "text-indigo-700 bg-indigo-50"
+                          : "text-amber-700 bg-amber-50"
                     }`}
                   >
-                    {msg.senderRole === "landlord" ? "🏠" : "🎓"}
+                    {msg.senderRole === "landlord" ? "🏠" : msg.senderRole === "admin" ? "⚙️" : "🎓"}
                   </span>
                 </div>
 
@@ -377,10 +464,14 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
                       isMe
                         ? msg.senderRole === "landlord"
                           ? "bg-[var(--primary)] text-white rounded-tr-sm"
-                          : "bg-amber-500 text-white rounded-tr-sm"
+                          : msg.senderRole === "admin"
+                            ? "bg-indigo-600 text-white rounded-tr-sm"
+                            : "bg-amber-500 text-white rounded-tr-sm"
                         : msg.senderRole === "landlord"
                           ? "bg-[var(--secondary)] text-[var(--foreground)] border border-[var(--primary)]/20 rounded-tl-sm"
-                          : "bg-[var(--card)] text-[var(--foreground)] border border-[var(--border)] rounded-tl-sm"
+                          : msg.senderRole === "admin"
+                            ? "bg-indigo-50 text-indigo-950 border border-indigo-200 rounded-tl-sm"
+                            : "bg-[var(--card)] text-[var(--foreground)] border border-[var(--border)] rounded-tl-sm"
                     }`}
                   >
                     {msg.content}
@@ -401,7 +492,7 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
         {/* Quick replies */}
         <div className="px-4 py-2 border-t border-[var(--border)] bg-[var(--card)]">
           <p className="text-[10px] text-[var(--muted-foreground)] font-medium mb-1.5 uppercase tracking-wider">
-            Quick replies — {isLandlord ? "as landlord" : "as student"}
+            Quick replies — {myRole}
           </p>
           <div className="flex gap-2 overflow-x-auto pb-1">
             {quickReplies.map((qr) => (
@@ -411,7 +502,9 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
                 className={`flex-shrink-0 px-3 py-1.5 rounded-full text-xs font-medium transition-colors whitespace-nowrap border ${
                   isLandlord
                     ? "bg-[var(--secondary)] text-[var(--primary)] border-[var(--primary)]/20 hover:bg-[var(--primary)] hover:text-white hover:border-[var(--primary)]"
-                    : "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-500 hover:text-white hover:border-amber-500"
+                    : isAdmin
+                      ? "bg-indigo-50 text-indigo-800 border-indigo-200 hover:bg-indigo-600 hover:text-white hover:border-indigo-600"
+                      : "bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-500 hover:text-white hover:border-amber-500"
                 }`}
               >
                 {qr}
@@ -424,7 +517,7 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
         <div className="border-t border-[var(--border)] bg-[var(--card)] px-4 py-3 flex gap-3 items-end">
           <div
             className={`flex-1 rounded-2xl px-4 py-2.5 flex items-end gap-2 border ${
-              isLandlord ? "bg-[var(--secondary)] border-[var(--primary)]/20" : "bg-amber-50 border-amber-200"
+              isLandlord ? "bg-[var(--secondary)] border-[var(--primary)]/20" : isAdmin ? "bg-indigo-50 border-indigo-200" : "bg-amber-50 border-amber-200"
             }`}
           >
             <textarea
@@ -436,7 +529,15 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
                   sendMessage(input);
                 }
               }}
-              placeholder={isLandlord ? "Reply to student inquiry…" : "Ask the landlord about availability, price, terms…"}
+              placeholder={
+                isAdmin || otherRole === "admin"
+                  ? `Message ${otherName}…`
+                  : isLandlord
+                    ? "Reply to message…"
+                    : otherRole === "student"
+                      ? "Message your roommate…"
+                      : "Ask the landlord about availability, price, terms…"
+              }
               rows={1}
               className="flex-1 bg-transparent text-sm resize-none outline-none max-h-24 leading-relaxed"
             />
@@ -445,12 +546,22 @@ export default function Chat({ userRole, session, chatTarget, onChatTargetHandle
             onClick={() => sendMessage(input)}
             disabled={!input.trim()}
             className={`w-10 h-10 rounded-full flex items-center justify-center transition-all flex-shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
-              isLandlord ? "bg-[var(--primary)] text-white hover:opacity-90" : "bg-amber-500 text-white hover:bg-amber-600"
+              isLandlord ? "bg-[var(--primary)] text-white hover:opacity-90" : isAdmin ? "bg-indigo-600 text-white hover:bg-indigo-700" : "bg-amber-500 text-white hover:bg-amber-600"
             }`}
           >
             ↑
           </button>
         </div>
+          </>
+        ) : (
+          <div className="flex flex-1 items-center justify-center p-8 text-center">
+            <div>
+              <div className="mb-3 text-3xl">💬</div>
+              <p className="text-sm font-medium">{error || "No conversations yet"}</p>
+              <p className="mt-1 text-xs text-[var(--muted-foreground)]">Choose a conversation or select New to message another user.</p>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

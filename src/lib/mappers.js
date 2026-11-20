@@ -121,7 +121,8 @@ const round1 = (n) => Math.round(n * 10) / 10;
 const ROOM_STATUS = {
   Available: "available",
   Reserved: "reserved",
-  Occupied: "occupied"
+  Occupied: "occupied",
+  Unavailable: "unavailable"
 };
 
 /*
@@ -326,6 +327,8 @@ export function mapRoom(r) {
       If the database status is not recognized, default to available.
     */
     status: ROOM_STATUS[r.availability_status] || "available",
+    availabilityStatus: r.availability_status || "Available",
+    unavailableReason: r.unavailable_reason || "",
 
     // Maximum number of occupants allowed in the room.
     capacity: r.capacity,

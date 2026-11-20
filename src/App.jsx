@@ -62,6 +62,7 @@ export default function App() {
 }
 function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
   const userRole = session?.role ?? null;
+  const navRole = session?.dbRole === "SuperAdmin" ? "superadmin" : userRole;
   const displayName = session?.name ?? "";
   const accountId = session?.accountId;
   const [unreadMessageCount, setUnreadMessageCount] = useState(0);
@@ -319,7 +320,7 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
       <Nav
         currentPage={page}
         onNavigate={(p) => navigate(p)}
-        userRole={userRole}
+        userRole={navRole}
         displayName={displayName}
         profilePhotoUrl={profilePhotoUrl}
         unreadMessageCount={unreadMessageCount}
@@ -377,7 +378,7 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
           <LandlordDashboard onNavigate={(p) => navigate(p)} displayName={displayName} session={session} onProfilePhotoChange={handleProfilePhotoChange} />
         )}
         {page === "admin" && <AdminConsole displayName={displayName} session={session} onProfilePhotoChange={handleProfilePhotoChange} />}
-        {page === "chat" && (
+        {page === "chat" && session?.dbRole !== "SuperAdmin" && (
           <Chat
             userRole={userRole}
             session={session}
@@ -386,7 +387,7 @@ function Shell({ session, setSession, passwordRecovery, setPasswordRecovery }) {
             onMessagesRead={refreshUnreadMessageCount}
           />
         )}
-        {page === "inbox" && userRole === "landlord" && (
+        {page === "inbox" && ["landlord", "student"].includes(userRole) && (
           <NotificationInbox
             accountId={accountId}
             onNotificationsChanged={refreshUnreadNotificationCount}

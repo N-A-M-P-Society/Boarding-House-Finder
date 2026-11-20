@@ -19,13 +19,13 @@ import Logo from "./Logo.jsx";
 // For example, the Dashboard is different for students and landlords.
 // Guests can browse listings but cannot see student or landlord dashboards.
 const NAV_ITEMS = [
-  { page: "home", label: "Home", icon: "⌂", roles: ["guest", "student", "landlord", "admin"] },
-  { page: "listings", label: "Browse", icon: "🔍", roles: ["guest", "student", "landlord", "admin"] },
+  { page: "home", label: "Home", icon: "⌂", roles: ["guest", "student", "landlord", "admin", "superadmin"] },
+  { page: "listings", label: "Browse", icon: "🔍", roles: ["guest", "student", "landlord", "admin", "superadmin"] },
   { page: "student-dashboard", label: "Dashboard", icon: "📋", roles: ["student"] },
   { page: "landlord-dashboard", label: "Dashboard", icon: "📋", roles: ["landlord"] },
-  { page: "admin", label: "Console", icon: "⚙️", roles: ["admin"] },
-  { page: "inbox", label: "Inbox", icon: "🔔", roles: ["landlord"] },
-  { page: "chat", label: "Messages", icon: "💬", roles: ["student", "landlord"] },
+  { page: "admin", label: "Console", icon: "⚙️", roles: ["admin", "superadmin"] },
+  { page: "inbox", label: "Inbox", icon: "🔔", roles: ["student", "landlord"] },
+  { page: "chat", label: "Messages", icon: "💬", roles: ["student", "landlord", "admin"] },
   { page: "comparison", label: "Compare", icon: "📊", roles: ["student"] },
 ];
 

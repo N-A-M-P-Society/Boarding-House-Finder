@@ -77,7 +77,7 @@ export default function NotificationInbox({ accountId, onNotificationsChanged })
         <div>
           <h1 className="font-display text-2xl font-semibold">Inbox</h1>
           <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-            Account updates and landlord verification notices.
+            Account updates, moderation decisions, and policy notices.
           </p>
         </div>
         <span className="text-xs text-[var(--muted-foreground)]">

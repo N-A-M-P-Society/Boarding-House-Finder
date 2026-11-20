@@ -3,7 +3,11 @@ export const metadata = {
   title: "UniRent — Safe student housing near ADDU",
   description: "Verified, safety-scored off-campus housing near Ateneo de Davao University.",
   icons: {
-    icon: "/unirent-logo.png",
+    icon: {
+      url: "/unirent-favicon.png",
+      type: "image/png",
+      sizes: "512x512",
+    },
   },
 };
 // Applies the saved/system theme before first paint to avoid a light-mode flash.
