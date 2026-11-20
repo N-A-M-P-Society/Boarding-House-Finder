@@ -1211,16 +1211,29 @@ export async function createReview({
   value,
   comment
 }) {
+  const numericHouseId = Number(houseId);
+  const ratings = [overall, cleanliness, responsiveness, value].map(Number);
+  if (!studentId || !Number.isSafeInteger(numericHouseId) || numericHouseId <= 0) {
+    throw new Error("A valid student and property are required to submit a review.");
+  }
+  if (!ratings.every((rating) => Number.isInteger(rating) && rating >= 1 && rating <= 5)) {
+    throw new Error("All review ratings must be between 1 and 5.");
+  }
+  const normalizedComment = String(comment ?? "").trim();
+  if (normalizedComment.length > 2000) {
+    throw new Error("Review comments must be 2,000 characters or fewer.");
+  }
+
   const { error } = await supabase
     .from("reviews")
     .insert({
       student_id: studentId,
-      house_id: Number(houseId),
-      rating_overall: overall,
-      rating_cleanliness: cleanliness,
-      rating_responsiveness: responsiveness,
-      rating_value: value,
-      comment
+      house_id: numericHouseId,
+      rating_overall: ratings[0],
+      rating_cleanliness: ratings[1],
+      rating_responsiveness: ratings[2],
+      rating_value: ratings[3],
+      comment: normalizedComment || null
     });
 
   fail(error);

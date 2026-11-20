@@ -4,10 +4,29 @@ import LeafletMap from "../components/LeafletMap.jsx";
 import ImageLightbox from "../components/ImageLightbox.jsx";
 import BookRoomButton from "../components/BookRoomButton.jsx";
 import { nearestCampusGate } from "../lib/geo.js";
-import { fetchMyRoommateMatchRequest, fetchPublicRoomBookings, saveListing } from "../lib/api.js";
+import {
+  createReview,
+  fetchBookings,
+  fetchMyRoommateMatchRequest,
+  fetchPublicRoomBookings,
+  saveListing,
+} from "../lib/api.js";
 
 const ACTIVE_BOOKING_STATUSES = new Set(["Pending", "Confirmed"]);
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const REVIEW_RATING_FIELDS = [
+  ["overall", "Overall"],
+  ["cleanliness", "Cleanliness"],
+  ["responsiveness", "Responsiveness"],
+  ["value", "Value"],
+];
+const EMPTY_REVIEW = {
+  overall: "",
+  cleanliness: "",
+  responsiveness: "",
+  value: "",
+  comment: "",
+};
 
 function formatLocalDate(date) {
   const year = date.getFullYear();
@@ -152,6 +171,15 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
   const [lightbox, setLightbox] = useState(null);
   const [activeImg, setActiveImg] = useState(0);
   const [activeTab, setActiveTab] = useState("overview");
+  const [reviewEligibility, setReviewEligibility] = useState(null);
+  const [reviewEligibilityLoading, setReviewEligibilityLoading] = useState(false);
+  const [reviewEligibilityError, setReviewEligibilityError] = useState("");
+  const [reviewFormOpen, setReviewFormOpen] = useState(false);
+  const [reviewDraft, setReviewDraft] = useState(EMPTY_REVIEW);
+  const [reviewSubmitting, setReviewSubmitting] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewNotice, setReviewNotice] = useState("");
+  const [reviewSubmitted, setReviewSubmitted] = useState(false);
   useEffect(() => {
     if (!property?.id) return;
     let active = true;
@@ -247,6 +275,46 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
       setBookMsg({ type: "error", text: e.message });
     }
   }
+  async function handleReviewSubmit(event) {
+    event.preventDefault();
+    if (!session?.studentId || !property) {
+      setReviewError("Sign in as a student to submit a review.");
+      return;
+    }
+    if (reviewEligibility !== true) {
+      setReviewError("A confirmed or completed booking for this property is required to review it.");
+      return;
+    }
+
+    setReviewSubmitting(true);
+    setReviewError("");
+    setReviewNotice("");
+    try {
+      await createReview({
+        studentId: session.studentId,
+        houseId: property.id,
+        overall: Number(reviewDraft.overall),
+        cleanliness: Number(reviewDraft.cleanliness),
+        responsiveness: Number(reviewDraft.responsiveness),
+        value: Number(reviewDraft.value),
+        comment: reviewDraft.comment,
+      });
+      setReviewSubmitted(true);
+      setReviewFormOpen(false);
+      setReviewDraft({ ...EMPTY_REVIEW });
+      setReviewNotice("Your review has been submitted. Thank you for sharing your experience.");
+
+      try {
+        await reload();
+      } catch (error) {
+        setReviewNotice(`Your review was submitted, but the page could not refresh: ${error.message}`);
+      }
+    } catch (error) {
+      setReviewError(error.message);
+    } finally {
+      setReviewSubmitting(false);
+    }
+  }
   useEffect(() => {
     setBookRoom("");
     setStartDate("");
@@ -255,6 +323,13 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
     setActiveTab("overview");
     setLightbox(null);
     setShareWithMatchedRoommate(false);
+    setReviewEligibility(null);
+    setReviewEligibilityError("");
+    setReviewFormOpen(false);
+    setReviewDraft({ ...EMPTY_REVIEW });
+    setReviewError("");
+    setReviewNotice("");
+    setReviewSubmitted(false);
   }, [propertyId]);
   useEffect(() => {
     if (!property || activeTab !== "overview" || lightbox) return;
@@ -272,6 +347,38 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
     window.addEventListener("keydown", handleGalleryKeys);
     return () => window.removeEventListener("keydown", handleGalleryKeys);
   }, [activeTab, lightbox, property]);
+
+  useEffect(() => {
+    if (activeTab !== "reviews" || userRole !== "student" || !session?.studentId || !property?.id) {
+      setReviewEligibilityLoading(false);
+      return;
+    }
+
+    let active = true;
+    setReviewEligibility(null);
+    setReviewEligibilityError("");
+    setReviewEligibilityLoading(true);
+    fetchBookings()
+      .then((bookings) => {
+        if (!active) return;
+        const eligible = bookings.some((booking) =>
+          booking.propertyId === String(property.id) &&
+          booking.studentId === String(session.studentId) &&
+          ["Confirmed", "Completed"].includes(booking.status)
+        );
+        setReviewEligibility(eligible);
+      })
+      .catch((error) => {
+        if (active) setReviewEligibilityError(error.message);
+      })
+      .finally(() => {
+        if (active) setReviewEligibilityLoading(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [activeTab, property?.id, session?.studentId, userRole]);
   function showLightbox(images, index, title, isPropertyGallery = false) {
     setLightbox({ images, index, title, isPropertyGallery });
   }
@@ -583,10 +690,108 @@ export default function PropertyDetail({ propertyId, onNavigate, onStartChat, on
 
             {activeTab === "reviews" && (
               <div className="space-y-4">
+                <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] p-4">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div>
+                      <h3 className="font-semibold">Share your experience</h3>
+                      <p className="mt-1 text-xs text-[var(--muted-foreground)]">
+                        Reviews are available to students with a confirmed or completed booking for this property.
+                      </p>
+                    </div>
+                    {userRole === "student" && !reviewSubmitted && (
+                      reviewEligibilityLoading ? (
+                        <span className="text-xs text-[var(--muted-foreground)]" role="status">Checking your booking...</span>
+                      ) : reviewEligibilityError ? (
+                        <span className="text-xs text-red-600" role="alert">Could not check review eligibility.</span>
+                      ) : reviewEligibility ? (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReviewFormOpen(true);
+                            setReviewError("");
+                            setReviewNotice("");
+                          }}
+                          className="rounded-xl bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white"
+                        >
+                          Write a review
+                        </button>
+                      ) : (
+                        <p className="text-xs text-[var(--muted-foreground)] sm:max-w-xs sm:text-right">
+                          You can review this property after one of your bookings is confirmed or completed.
+                        </p>
+                      )
+                    )}
+                  </div>
+
+                  {reviewEligibilityError && (
+                    <p className="mt-3 text-xs text-red-600" role="alert">{reviewEligibilityError}</p>
+                  )}
+                  {reviewNotice && (
+                    <p className="mt-3 text-xs text-emerald-700" role="status">{reviewNotice}</p>
+                  )}
+                  {reviewError && (
+                    <p className="mt-3 text-xs text-red-600" role="alert">{reviewError}</p>
+                  )}
+
+                  {reviewFormOpen && reviewEligibility && (
+                    <form onSubmit={handleReviewSubmit} className="mt-4 space-y-4 border-t border-[var(--border)] pt-4">
+                      <div className="grid gap-3 sm:grid-cols-2">
+                        {REVIEW_RATING_FIELDS.map(([field, label]) => (
+                          <label key={field} className="space-y-1 text-sm">
+                            <span className="font-medium">{label} rating</span>
+                            <select
+                              required
+                              value={reviewDraft[field]}
+                              onChange={(event) => setReviewDraft((draft) => ({ ...draft, [field]: event.target.value }))}
+                              className="w-full rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2"
+                            >
+                              <option value="" disabled>Select a rating</option>
+                              {[5, 4, 3, 2, 1].map((rating) => (
+                                <option key={rating} value={rating}>{rating} / 5</option>
+                              ))}
+                            </select>
+                          </label>
+                        ))}
+                      </div>
+                      <label className="block space-y-1 text-sm">
+                        <span className="font-medium">Comment <span className="font-normal text-[var(--muted-foreground)]">(optional)</span></span>
+                        <textarea
+                          value={reviewDraft.comment}
+                          onChange={(event) => setReviewDraft((draft) => ({ ...draft, comment: event.target.value }))}
+                          maxLength={2000}
+                          rows={4}
+                          placeholder="Share helpful details about your stay."
+                          className="w-full resize-y rounded-lg border border-[var(--border)] bg-[var(--background)] px-3 py-2"
+                        />
+                      </label>
+                      <div className="flex justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setReviewFormOpen(false);
+                            setReviewError("");
+                          }}
+                          disabled={reviewSubmitting}
+                          className="rounded-xl border border-[var(--border)] px-4 py-2 text-sm font-semibold disabled:opacity-60"
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={reviewSubmitting}
+                          className="rounded-xl bg-[var(--primary)] px-4 py-2 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {reviewSubmitting ? "Submitting..." : "Submit review"}
+                        </button>
+                      </div>
+                    </form>
+                  )}
+                </div>
+
                 {property.reviews.length === 0 ? (
                   <div className="text-center py-8 text-[var(--muted-foreground)]">
                     <div className="text-2xl mb-2">📝</div>
-                    <p className="text-sm">No reviews yet — be the first verified tenant to leave one.</p>
+                    <p className="text-sm">No reviews have been submitted yet.</p>
                   </div>
                 ) : (
                   <>
